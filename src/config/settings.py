@@ -25,6 +25,22 @@ DEFAULT_CONFIG = {
     "BASE_CURRENCY": "USDT",
     "LOG_LEVEL": "INFO",
     
+    # API ayarları
+    "API_KEY": "",
+    "API_SECRET": "",
+    "TESTNET": True,
+    
+    # Strateji ayarları
+    "STRATEGY": "moving_average",
+    "INDICATORS": {
+        "RSI": {"period": 14, "overbought": 70, "oversold": 30},
+        "RSI_MIDDLE_BAND": {"rsi_period": 14, "positive_momentum": 50, "negative_momentum": 45}
+    },
+    
+    # Risk yönetimi ayarları
+    "MAX_OPEN_TRADES": 3,
+    "MAX_RISK_PERCENT": 5.0,
+    
     # Log ayarları
     "LOG_CONFIG": {
         "log_dir": "logs",
@@ -78,7 +94,7 @@ DEFAULT_CONFIG = {
 
 class Settings:
     """
-    Trading botu için yapılandırma ayarlarını yöneten sınıf.
+    Trading bot ayarlarını yöneten sınıf.
     
     Ayarlar şu kaynaklardan okunabilir (öncelik sırasıyla):
     1. .env dosyası
@@ -87,27 +103,33 @@ class Settings:
     """
     
     def __init__(self):
-        """Settings sınıfını başlatır ve ayarları yükler."""
+        """
+        Settings sınıfını başlatır ve ayarları yükler.
+        """
         self._config = DEFAULT_CONFIG.copy()
         self._load_config()
     
     def _load_config(self):
         """
-        Ayarları yükler. Önce json dosyasını, sonra env değişkenlerini kontrol eder.
+        Yapılandırma ayarlarını yükler.
+        
+        Öncelik sırası:
+        1. .env dosyası
+        2. config.json dosyası
+        3. Varsayılan değerler (DEFAULT_CONFIG)
         """
-        # 1. config.json dosyasından yükle (varsa)
+        # .env dosyasından yükle
+        self._load_from_env()
+        
+        # config.json dosyasından yükle (varsa)
         config_path = ROOT_DIR / "config.json"
         if config_path.exists():
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
-                    json_config = json.load(f)
-                    self._update_nested_dict(self._config, json_config)
-                    logging.info(f"Ayarlar {config_path} dosyasından yüklendi")
+                    config_data = json.load(f)
+                self._config = self._update_nested_dict(self._config, config_data)
             except Exception as e:
-                logging.error(f"config.json yüklenirken hata: {e}")
-        
-        # 2. .env dosyasından değerleri güncelle
-        self._load_from_env()
+                logging.error(f"config.json dosyası yüklenirken hata oluştu: {e}")
     
     def _load_from_env(self):
         """
@@ -238,10 +260,10 @@ class Settings:
     
     def __getattr__(self, name: str) -> Any:
         """
-        Özellik erişimi için özel metod (örn: settings.BOT_MODE).
+        Özellik erişimini yönetir. Eğer özellik _config içinde yoksa AttributeError fırlatır.
         
         Args:
-            name: Özellik adı
+            name: Erişilmek istenen özellik adı
             
         Returns:
             Any: Özellik değeri
@@ -252,7 +274,47 @@ class Settings:
         if name in self._config:
             return self._config[name]
         raise AttributeError(f"'{self.__class__.__name__}' nesnesi '{name}' özelliğine sahip değil")
+        
+    @property
+    def api_key(self) -> str:
+        """API anahtarını döndürür."""
+        return self._config.get("API_KEY", "")
+        
+    @property
+    def api_secret(self) -> str:
+        """API gizli anahtarını döndürür."""
+        return self._config.get("API_SECRET", "")
+        
+    @property
+    def testnet(self) -> bool:
+        """Test ağı kullanılıp kullanılmayacağını döndürür."""
+        return self._config.get("TESTNET", True)
+        
+    @property
+    def max_open_trades(self) -> int:
+        """Maksimum açık işlem sayısını döndürür."""
+        return self._config.get("MAX_OPEN_TRADES", 3)
+        
+    @property
+    def max_risk_percent(self) -> float:
+        """Maksimum risk yüzdesini döndürür."""
+        return self._config.get("MAX_RISK_PERCENT", 5.0)
+        
+    @property
+    def strategy(self) -> str:
+        """Kullanılacak stratejiyi döndürür."""
+        return self._config.get("STRATEGY", "moving_average")
+        
+    @property
+    def indicators(self) -> Dict[str, Dict[str, Any]]:
+        """Göstergeleri döndürür."""
+        return self._config.get("INDICATORS", {})
 
-
-# Singleton Settings nesnesi
-settings = Settings() 
+def load_config() -> Settings:
+    """
+    Yapılandırma ayarlarını yükler ve Settings nesnesi döndürür.
+    
+    Returns:
+        Settings: Yapılandırma ayarlarını içeren Settings nesnesi
+    """
+    return Settings() 

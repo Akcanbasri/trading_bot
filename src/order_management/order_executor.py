@@ -4,9 +4,11 @@ Emir yürütme ve yönetim modülü.
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime
 from loguru import logger
+import os
 
 from src.api.client import BinanceClient
 from src.risk_management.risk_manager import RiskManager
+from src.notifications.telegram_notifier import TelegramNotifier
 
 
 class OrderExecutor:
@@ -26,6 +28,16 @@ class OrderExecutor:
         self.risk_manager = risk_manager
         self.orders: List[Dict[str, Any]] = []
         self.positions: Dict[str, Dict[str, Any]] = {}
+        
+        # Telegram bildirimleri için
+        telegram_enabled = os.getenv("ENABLE_TELEGRAM_NOTIFICATIONS", "false").lower() == "true"
+        if telegram_enabled:
+            self.notifier = TelegramNotifier(
+                bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+                chat_id=os.getenv("TELEGRAM_CHAT_ID")
+            )
+        else:
+            self.notifier = None
         
         logger.info("Emir yürütücüsü başlatıldı")
     
@@ -128,6 +140,16 @@ class OrderExecutor:
             if order["status"] == "FILLED":
                 self._update_position(symbol, "BUY", quantity, float(order.get("price", 0)))
             
+            # Telegram bildirimi gönder
+            if self.notifier and order.get("status") == "FILLED":
+                self.notifier.send_trade_notification(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=quantity,
+                    price=float(order["price"]),
+                    profit_loss=None  # İlk açılışta kar/zarar yok
+                )
+            
             logger.info(f"ALIM emri oluşturuldu: {symbol} - Miktar: {quantity}")
             return order_info
             
@@ -197,6 +219,16 @@ class OrderExecutor:
             # Pozisyonu takip et
             if order["status"] == "FILLED":
                 self._update_position(symbol, "SELL", quantity, float(order.get("price", 0)))
+            
+            # Telegram bildirimi gönder
+            if self.notifier and order.get("status") == "FILLED":
+                self.notifier.send_trade_notification(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=quantity,
+                    price=float(order["price"]),
+                    profit_loss=None  # İlk açılışta kar/zarar yok
+                )
             
             logger.info(f"SATIM emri oluşturuldu: {symbol} - Miktar: {quantity}")
             return order_info
@@ -268,6 +300,17 @@ class OrderExecutor:
             
             self.orders.append(order_info)
             logger.info(f"LIMIT ALIM emri oluşturuldu: {symbol} - Fiyat: {price}, Miktar: {quantity}")
+            
+            # Telegram bildirimi gönder
+            if self.notifier and order.get("status") == "FILLED":
+                self.notifier.send_trade_notification(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=quantity,
+                    price=float(order["price"]),
+                    profit_loss=None  # İlk açılışta kar/zarar yok
+                )
+            
             return order_info
             
         except Exception as e:
@@ -338,6 +381,17 @@ class OrderExecutor:
             
             self.orders.append(order_info)
             logger.info(f"LIMIT SATIM emri oluşturuldu: {symbol} - Fiyat: {price}, Miktar: {quantity}")
+            
+            # Telegram bildirimi gönder
+            if self.notifier and order.get("status") == "FILLED":
+                self.notifier.send_trade_notification(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=quantity,
+                    price=float(order["price"]),
+                    profit_loss=None  # İlk açılışta kar/zarar yok
+                )
+            
             return order_info
             
         except Exception as e:

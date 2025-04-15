@@ -27,11 +27,18 @@ class MovingAverageCrossover(BaseStrategy):
         signal_threshold (float): The minimum threshold for signal strength to generate a signal.
     """
     
-    def __init__(self, short_period: int = 10, long_period: int = 30, signal_threshold: float = 0.002):
+    def __init__(
+        self,
+        data_collector: MarketDataCollector,
+        short_period: int = 10,
+        long_period: int = 30,
+        signal_threshold: float = 0.002
+    ):
         """
         Initialize the MovingAverageCrossover strategy with the specified parameters.
         
         Args:
+            data_collector (MarketDataCollector): Market data collector instance
             short_period (int, optional): The period for calculating the short moving average. Defaults to 10.
             long_period (int, optional): The period for calculating the long moving average. Defaults to 30.
             signal_threshold (float, optional): The threshold for determining signal strength. Defaults to 0.002.
@@ -49,6 +56,7 @@ class MovingAverageCrossover(BaseStrategy):
         if signal_threshold <= 0:
             raise ValueError("Signal threshold must be a positive number")
         
+        self.data_collector = data_collector
         self.short_period = short_period
         self.long_period = long_period
         self.signal_threshold = signal_threshold
@@ -179,12 +187,11 @@ class MovingAverageCrossover(BaseStrategy):
             logger.error(f"Error calculating signal strength: {str(e)}")
             raise CalculationError(f"Failed to calculate signal strength: {str(e)}") from e
     
-    def generate_signal(self, prices: List[float], symbol: str, timeframe: str) -> Dict[str, Any]:
+    def generate_signal(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
         Generate a trading signal based on the moving average crossover strategy.
         
         Args:
-            prices (List[float]): A list of price data points.
             symbol (str): The trading symbol.
             timeframe (str): The timeframe of the price data.
             
@@ -197,10 +204,19 @@ class MovingAverageCrossover(BaseStrategy):
             StrategyError: If the strategy fails to generate a signal.
         """
         try:
+            # Get historical data from market data collector
+            df = self.data_collector.get_historical_data(symbol, timeframe)
+            
+            if df.empty:
+                raise InsufficientDataError("No historical data available")
+            
+            # Extract closing prices
+            prices = df['close'].values.tolist()
+            
             if len(prices) < max(self.short_period, self.long_period):
                 raise InsufficientDataError(
-                    f"Insufficient price data for signal generation. "
-                    f"Need at least {max(self.short_period, self.long_period)} data points, but got {len(prices)}"
+                    f"Not enough price data. Need at least {max(self.short_period, self.long_period)} "
+                    f"data points, but got {len(prices)}"
                 )
             
             # Calculate moving averages
@@ -208,59 +224,38 @@ class MovingAverageCrossover(BaseStrategy):
             short_ma = ma_data["short_ma"]
             long_ma = ma_data["long_ma"]
             
-            # Get the current price
-            current_price = prices[-1]
-            
             # Detect crossover
             crossover = self.detect_crossover(short_ma, long_ma)
             
-            # Get the last valid moving average values
-            last_short_ma = short_ma[-1]
-            last_long_ma = long_ma[-1]
-            
-            if last_short_ma is None or last_long_ma is None:
-                raise CalculationError("Last moving average values are None")
-            
             # Calculate signal strength
-            strength = self.calculate_signal_strength(last_short_ma, last_long_ma)
+            current_short_ma = short_ma[-1]
+            current_long_ma = long_ma[-1]
+            strength = self.calculate_signal_strength(current_short_ma, current_long_ma)
             
-            # Determine the signal
+            # Generate signal based on crossover and strength
             signal = "NEUTRAL"
-            if crossover == "up" or (last_short_ma > last_long_ma and strength > 1.0):
+            if crossover == "up" and strength > 0:
                 signal = "BUY"
-            elif crossover == "down" or (last_short_ma < last_long_ma and strength < -1.0):
+            elif crossover == "down" and strength < 0:
                 signal = "SELL"
             
-            # Create signal data with detailed metadata
-            signal_data = {
+            # Store the signal
+            self.last_signal = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "signal": signal,
                 "strength": abs(strength),
-                "current_price": current_price,
-                "short_ma": last_short_ma,
-                "long_ma": last_long_ma,
-                "ma_difference": last_short_ma - last_long_ma,
-                "ma_difference_percent": ((last_short_ma - last_long_ma) / last_long_ma) * 100 if last_long_ma != 0 else 0,
-                "crossover_detected": crossover is not None,
-                "crossover_direction": crossover,
-                "timestamp": pd.Timestamp.now().isoformat(),
-                "strategy": self.name,
-                "parameters": {
-                    "short_period": self.short_period,
-                    "long_period": self.long_period,
-                    "signal_threshold": self.signal_threshold
-                }
+                "timestamp": datetime.now().isoformat(),
+                "short_ma": current_short_ma,
+                "long_ma": current_long_ma,
+                "crossover": crossover,
+                "current_price": prices[-1]
             }
             
-            logger.info(f"Generated {signal} signal for {symbol} ({timeframe}) with strength {abs(strength):.2f}")
-            return signal_data
+            return self.last_signal
             
-        except (InsufficientDataError, CalculationError) as e:
-            logger.error(f"Error generating signal: {str(e)}")
-            raise
         except Exception as e:
-            logger.error(f"Unexpected error in generate_signal: {str(e)}")
+            logger.error(f"Error generating signal: {str(e)}")
             raise StrategyError(f"Failed to generate signal: {str(e)}") from e
     
     def backtest(self, historical_prices: List[float], symbol: str, timeframe: str) -> List[Dict[str, Any]]:
@@ -294,7 +289,7 @@ class MovingAverageCrossover(BaseStrategy):
             for i in range(min_required_data, len(historical_prices) + 1):
                 try:
                     price_window = historical_prices[:i]
-                    signal_data = self.generate_signal(price_window, symbol, timeframe)
+                    signal_data = self.generate_signal(symbol, timeframe)
                     signals.append(signal_data)
                 except (InsufficientDataError, CalculationError) as e:
                     logger.warning(f"Skipping signal generation at index {i}: {str(e)}")
