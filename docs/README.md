@@ -1,76 +1,76 @@
 # Binance Trading Bot
 
-Binance API kullanan, modüler, SOLID ve DRY prensiplerine uygun bir trading bot.
+A modular trading bot using the Binance API, following SOLID and DRY principles.
 
-## Proje Yapısı
+## Project Structure
 
 ```
 trading_bot/
-├── src/                      # Kaynak kod
-│   ├── api/                  # Binance API entegrasyonu
-│   ├── config/               # Yapılandırma ayarları
-│   ├── data/                 # Veri çekme ve işleme
-│   ├── indicators/           # Teknik göstergeler
-│   ├── order_management/     # Emir yönetimi
-│   ├── risk_management/      # Risk yönetimi
-│   ├── signals/              # Sinyal oluşturma ve kontrol
-│   ├── strategies/           # Trading stratejileri
-│   └── utils/                # Yardımcı fonksiyonlar
-├── tests/                    # Test dosyaları
-├── docs/                     # Dökümantasyon
-└── logs/                     # Log dosyaları
+├── src/                      # Source code
+│   ├── api/                  # Binance API integration
+│   ├── config/               # Configuration settings
+│   ├── data/                 # Data fetching and processing
+│   ├── indicators/           # Technical indicators
+│   ├── order_management/     # Order management
+│   ├── risk_management/      # Risk management
+│   ├── signals/              # Signal generation and control
+│   ├── strategies/           # Trading strategies
+│   └── utils/                # Utility functions
+├── tests/                    # Test files
+├── docs/                     # Documentation
+└── logs/                     # Log files
 ```
 
-## Kurulum
+## Installation
 
 ```bash
-# Gerekli kütüphaneleri yükleyin
+# Install required libraries
 pip install -r requirements.txt
 ```
 
-## Kullanım
+## Usage
 
 ```bash
 python -m src.main
 ```
 
-## Long ve Short Koşulları
+## Long and Short Conditions
 
-Bot, iki farklı strateji kullanarak long ve short pozisyonlar açar:
+The bot opens long and short positions using two different strategies:
 
-### 1. Hareketli Ortalama Kesişimi (Moving Average Crossover) Stratejisi
+### 1. Moving Average Crossover Strategy
 
-- **Long (Alış) Koşulları:**
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamayı yukarı keserse
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamanın üzerinde ve sinyal gücü 1.0'dan büyükse
+- **Long (Buy) Conditions:**
+  - Short-term moving average crosses above long-term moving average
+  - Short-term moving average is above long-term moving average and signal strength is greater than 1.0
 
-- **Short (Satış) Koşulları:**
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamayı aşağı keserse
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamanın altında ve sinyal gücü -1.0'dan küçükse
+- **Short (Sell) Conditions:**
+  - Short-term moving average crosses below long-term moving average
+  - Short-term moving average is below long-term moving average and signal strength is less than -1.0
 
-### 2. FiboBULL Stratejisi
+### 2. FiboBULL Strategy
 
-- **Long (Alış) Koşulları:**
-  - FiboBULL PA göstergesi "BUY" sinyali verdiğinde
-  - Yukarı trend başlangıcı tespit edildiğinde
+- **Long (Buy) Conditions:**
+  - When FiboBULL PA indicator gives a "BUY" signal
+  - When an upward trend is detected
 
-- **Short (Satış) Koşulları:**
-  - FiboBULL PA göstergesi "SELL" sinyali verdiğinde
-  - Aşağı trend başlangıcı tespit edildiğinde
+- **Short (Sell) Conditions:**
+  - When FiboBULL PA indicator gives a "SELL" signal
+  - When a downward trend is detected
 
-### Pozisyon Kapatma Koşulları
+### Position Closing Conditions
 
-Her iki strateji için de pozisyonlar şu durumlarda kapatılır:
+For both strategies, positions are closed under the following conditions:
 
-1. **Stop-Loss:** Fiyat, belirlenen stop-loss seviyesine ulaştığında
-2. **Take-Profit:** Fiyat, belirlenen take-profit seviyesine ulaştığında
-3. **Sinyal Değişimi:** 
-   - Long pozisyondayken "SELL" sinyali geldiğinde
-   - Short pozisyondayken "BUY" sinyali geldiğinde
+1. **Stop-Loss:** When price reaches the specified stop-loss level
+2. **Take-Profit:** When price reaches the specified take-profit level
+3. **Signal Change:** 
+   - When a "SELL" signal is received while in a long position
+   - When a "BUY" signal is received while in a short position
 
-### Risk Yönetimi
+### Risk Management
 
-- Her işlem için minimum 5 USDT'lik pozisyon büyüklüğü kontrolü
-- Maksimum pozisyon büyüklüğü hesap bakiyesinin %3'ü ile sınırlı
-- Günlük maksimum kayıp limiti hesap bakiyesinin %3'ü
-- Toplam maksimum kayıp limiti hesap bakiyesinin %15'i 
+- Minimum 5 USDT position size check for each trade
+- Maximum position size limited to 3% of account balance
+- Daily maximum loss limit of 3% of account balance
+- Total maximum loss limit of 15% of account balance 

@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="docs/images/logo.png" alt="Trading Bot Logo" width="200"/>
-  <p><em>Modüler, SOLID ve DRY prensiplerine uygun, gelişmiş risk yönetimi özelliklerine sahip kripto trading bot</em></p>
+  <p><em>A modular crypto trading bot with advanced risk management features, following SOLID and DRY principles</em></p>
   
   [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
   [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -10,65 +10,65 @@
   [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 </div>
 
-## 📋 İçindekiler
+## 📋 Table of Contents
 
-- [Özellikler](#-özellikler)
-- [Proje Yapısı](#-proje-yapısı)
-- [Kurulum](#-kurulum)
-- [Kullanım](#-kullanım)
-- [Stratejiler](#-stratejiler)
-- [Risk Yönetimi](#-risk-yönetimi)
-- [Göstergeler](#-göstergeler)
-- [Sinyal Yönetimi](#-sinyal-yönetimi)
-- [Katkıda Bulunma](#-katkıda-bulunma)
-- [Lisans](#-lisans)
+- [Features](#-features)
+- [Project Structure](#-project-structure)
+- [Installation](#-installation)
+- [Usage](#-usage)
+- [Strategies](#-strategies)
+- [Risk Management](#-risk-management)
+- [Indicators](#-indicators)
+- [Signal Management](#-signal-management)
+- [Contributing](#-contributing)
+- [License](#-license)
 
-## ✨ Özellikler
+## ✨ Features
 
-- **Modüler Yapı**: SOLID ve DRY prensiplerine uygun, genişletilebilir mimari
-- **Çoklu Strateji Desteği**: Farklı trading stratejilerini kolayca entegre edebilme
-- **Gelişmiş Risk Yönetimi**: Pozisyon büyüklüğü, stop-loss ve take-profit kontrolleri
-- **Teknik Göstergeler**: RSI, RSI Middle Band ve diğer teknik göstergeler
-- **Sinyal Yönetimi**: Birden fazla göstergeden gelen sinyalleri birleştirme
-- **Backtest Desteği**: Geçmiş veriler üzerinde stratejileri test etme
-- **Bildirim Sistemi**: İşlem açılış/kapanışlarında bildirim gönderme
-- **Detaylı Loglama**: Tüm işlemlerin ve hataların kaydedilmesi
+- **Modular Architecture**: Extensible architecture following SOLID and DRY principles
+- **Multiple Strategy Support**: Easy integration of different trading strategies
+- **Advanced Risk Management**: Position sizing, stop-loss, and take-profit controls
+- **Technical Indicators**: RSI, RSI Middle Band, and other technical indicators
+- **Signal Management**: Combining signals from multiple indicators
+- **Backtest Support**: Testing strategies on historical data
+- **Notification System**: Sending notifications for trade entries/exits
+- **Detailed Logging**: Recording all operations and errors
 
-## 📁 Proje Yapısı
+## 📁 Project Structure
 
 ```
 trading_bot/
-├── src/                      # Kaynak kod
-│   ├── api/                  # Binance API entegrasyonu
-│   ├── config/               # Yapılandırma ayarları
-│   ├── data/                 # Veri çekme ve işleme
-│   ├── indicators/           # Teknik göstergeler
-│   ├── order_management/     # Emir yönetimi
-│   ├── risk_management/      # Risk yönetimi
-│   ├── signals/              # Sinyal oluşturma ve kontrol
-│   ├── strategies/           # Trading stratejileri
-│   └── utils/                # Yardımcı fonksiyonlar
-├── tests/                    # Test dosyaları
-├── docs/                     # Dökümantasyon
-└── logs/                     # Log dosyaları
+├── src/                      # Source code
+│   ├── api/                  # Binance API integration
+│   ├── config/               # Configuration settings
+│   ├── data/                 # Data fetching and processing
+│   ├── indicators/           # Technical indicators
+│   ├── order_management/     # Order management
+│   ├── risk_management/      # Risk management
+│   ├── signals/              # Signal generation and control
+│   ├── strategies/           # Trading strategies
+│   └── utils/                # Utility functions
+├── tests/                    # Test files
+├── docs/                     # Documentation
+└── logs/                     # Log files
 ```
 
-## 🚀 Kurulum
+## 🚀 Installation
 
-### Gereksinimler
+### Requirements
 
-- Python 3.9 veya üzeri
-- Binance hesabı ve API anahtarları
+- Python 3.9 or higher
+- Binance account and API keys
 
-### Adımlar
+### Steps
 
-1. Repoyu klonlayın:
+1. Clone the repository:
    ```bash
    git clone https://github.com/Akcanbasri/trading_bot.git
    cd trading_bot
    ```
 
-2. Sanal ortam oluşturun ve aktifleştirin:
+2. Create and activate virtual environment:
    ```bash
    python -m venv venv
    # Windows
@@ -77,122 +77,122 @@ trading_bot/
    source venv/bin/activate
    ```
 
-3. Gerekli kütüphaneleri yükleyin:
+3. Install required packages:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. `.env` dosyasını oluşturun:
+4. Create `.env` file:
    ```bash
    cp .env.example .env
    ```
 
-5. `.env` dosyasını düzenleyin ve Binance API anahtarlarınızı ekleyin:
+5. Edit `.env` file and add your Binance API keys:
    ```
    BINANCE_API_KEY=your_api_key
    BINANCE_API_SECRET=your_api_secret
    ```
 
-## 💻 Kullanım
+## 💻 Usage
 
-### Botu Çalıştırma
+### Running the Bot
 
 ```bash
 python -m src.main
 ```
 
-### Backtest Yapma
+### Running Backtest
 
 ```bash
 python -m src.backtest --strategy moving_average --symbol BTCUSDT --start-date 2023-01-01 --end-date 2023-12-31
 ```
 
-### Strateji Optimizasyonu
+### Strategy Optimization
 
 ```bash
 python -m src.optimize --strategy moving_average --symbol BTCUSDT --parameter short_period --range 5,20,5
 ```
 
-## 📊 Stratejiler
+## 📊 Strategies
 
-Bot, iki farklı strateji kullanarak long ve short pozisyonlar açar:
+The bot opens long and short positions using two different strategies:
 
-### 1. Hareketli Ortalama Kesişimi (Moving Average Crossover) Stratejisi
+### 1. Moving Average Crossover Strategy
 
-- **Long (Alış) Koşulları:**
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamayı yukarı keserse
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamanın üzerinde ve sinyal gücü 1.0'dan büyükse
+- **Long (Buy) Conditions:**
+  - Short-term moving average crosses above long-term moving average
+  - Short-term moving average is above long-term moving average and signal strength is greater than 1.0
 
-- **Short (Satış) Koşulları:**
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamayı aşağı keserse
-  - Kısa dönem hareketli ortalama, uzun dönem hareketli ortalamanın altında ve sinyal gücü -1.0'dan küçükse
+- **Short (Sell) Conditions:**
+  - Short-term moving average crosses below long-term moving average
+  - Short-term moving average is below long-term moving average and signal strength is less than -1.0
 
-### 2. FiboBULL Stratejisi
+### 2. FiboBULL Strategy
 
-- **Long (Alış) Koşulları:**
-  - FiboBULL PA göstergesi "BUY" sinyali verdiğinde
-  - Yukarı trend başlangıcı tespit edildiğinde
+- **Long (Buy) Conditions:**
+  - When FiboBULL PA indicator gives a "BUY" signal
+  - When an upward trend is detected
 
-- **Short (Satış) Koşulları:**
-  - FiboBULL PA göstergesi "SELL" sinyali verdiğinde
-  - Aşağı trend başlangıcı tespit edildiğinde
+- **Short (Sell) Conditions:**
+  - When FiboBULL PA indicator gives a "SELL" signal
+  - When a downward trend is detected
 
-### Pozisyon Kapatma Koşulları
+### Position Closing Conditions
 
-Her iki strateji için de pozisyonlar şu durumlarda kapatılır:
+For both strategies, positions are closed under the following conditions:
 
-1. **Stop-Loss:** Fiyat, belirlenen stop-loss seviyesine ulaştığında
-2. **Take-Profit:** Fiyat, belirlenen take-profit seviyesine ulaştığında
-3. **Sinyal Değişimi:** 
-   - Long pozisyondayken "SELL" sinyali geldiğinde
-   - Short pozisyondayken "BUY" sinyali geldiğinde
+1. **Stop-Loss:** When price reaches the specified stop-loss level
+2. **Take-Profit:** When price reaches the specified take-profit level
+3. **Signal Change:** 
+   - When a "SELL" signal is received while in a long position
+   - When a "BUY" signal is received while in a short position
 
-## 🛡️ Risk Yönetimi
+## 🛡️ Risk Management
 
-Bot, aşağıdaki risk yönetimi özelliklerini içerir:
+The bot includes the following risk management features:
 
-- **Minimum Pozisyon Büyüklüğü:** Her işlem için minimum 5 USDT'lik pozisyon büyüklüğü kontrolü
-- **Maksimum Pozisyon Büyüklüğü:** Hesap bakiyesinin %3'ü ile sınırlı
-- **Günlük Maksimum Kayıp Limiti:** Hesap bakiyesinin %3'ü
-- **Toplam Maksimum Kayıp Limiti:** Hesap bakiyesinin %15'i
-- **Dinamik Stop-Loss:** Pozisyon açıldıktan sonra kâr arttıkça stop-loss seviyesini yükseltme
-- **Kâr Alım Seviyeleri:** Farklı kâr hedeflerine ulaşıldığında kısmi pozisyon kapatma
+- **Minimum Position Size:** Minimum 5 USDT position size check for each trade
+- **Maximum Position Size:** Limited to 3% of account balance
+- **Daily Maximum Loss Limit:** 3% of account balance
+- **Total Maximum Loss Limit:** 15% of account balance
+- **Dynamic Stop-Loss:** Increasing stop-loss level as profit grows after position opening
+- **Profit Taking Levels:** Partial position closing at different profit targets
 
-## 📈 Göstergeler
+## 📈 Indicators
 
-Bot, aşağıdaki teknik göstergeleri kullanır:
+The bot uses the following technical indicators:
 
-- **RSI (Relative Strength Index):** Aşırı alım/satım seviyelerini belirlemek için
-- **RSI Middle Band:** Momentum değişimlerini tespit etmek için
-- **Hareketli Ortalamalar:** Trend yönünü belirlemek için
-- **FiboBULL PA:** Fibonacci seviyelerine göre alım/satım sinyalleri üretmek için
+- **RSI (Relative Strength Index):** For determining overbought/oversold levels
+- **RSI Middle Band:** For detecting momentum changes
+- **Moving Averages:** For determining trend direction
+- **FiboBULL PA:** For generating buy/sell signals based on Fibonacci levels
 
-## 🔔 Sinyal Yönetimi
+## 🔔 Signal Management
 
-`TradeSignalManager` sınıfı, farklı göstergelerden gelen sinyalleri birleştirerek alım/satım kararları verir:
+The `TradeSignalManager` class combines signals from different indicators to make trading decisions:
 
-- Birden fazla göstergenin sinyallerini birleştirme
-- Aynı anda sadece bir açık pozisyon olmasını sağlama
-- Gösterge sinyallerinde minimum uyum şartı tanımlama
-- İşlem açılış ve kapanışlarında bildirim mekanizması
-- Detaylı işlem geçmişi tutma
+- Combining signals from multiple indicators
+- Ensuring only one open position at a time
+- Defining minimum agreement requirement for indicator signals
+- Notification mechanism for trade entries and exits
+- Detailed trade history tracking
 
-## 🤝 Katkıda Bulunma
+## 🤝 Contributing
 
-Katkıda bulunmak için:
+To contribute:
 
-1. Bu repoyu fork edin
-2. Yeni bir branch oluşturun (`git checkout -b feature/amazing-feature`)
-3. Değişikliklerinizi commit edin (`git commit -m 'Add some amazing feature'`)
-4. Branch'inizi push edin (`git push origin feature/amazing-feature`)
-5. Pull Request oluşturun
+1. Fork this repository
+2. Create a new branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Create a Pull Request
 
-## 📄 Lisans
+## 📄 License
 
-Bu proje MIT lisansı altında lisanslanmıştır. Daha fazla bilgi için [LICENSE](LICENSE) dosyasına bakın.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
 
 ---
 
 <div align="center">
-  <p>Bu proje eğitim amaçlıdır. Kripto para ticareti risk içerir. Lütfen kendi araştırmanızı yapın ve risk yönetimi stratejilerinizi uygulayın.</p>
+  <p>This project is for educational purposes. Cryptocurrency trading involves risk. Please do your own research and implement your risk management strategies.</p>
 </div> 
