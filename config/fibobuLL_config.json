@@ -1,0 +1,16 @@
+{
+  "data_source": "sample",
+  "sample_periods": 500,
+  "csv_file": "data/sample.csv",
+  "symbol": "EURUSD=X",
+  "period": "1y",
+  "interval": "1d",
+  "left_bars": 8,
+  "right_bars": 8,
+  "stop_loss_percent": 3.0,
+  "take_profit_percent": 6.0,
+  "use_confirmations": true,
+  "visualize": true,
+  "print_summary": true,
+  "title": "FiboBULL Strateji"
+} 
