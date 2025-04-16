@@ -14,6 +14,8 @@ from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
 from loguru import logger
+import pandas as pd
+from .websocket_client import BinanceWebSocket
 
 # .env dosyasını yükle
 load_dotenv()
@@ -66,6 +68,10 @@ class BinanceClient:
         # Sunucu zamanı farkını hesapla
         self.time_offset = 0
         self._sync_time()
+        
+        # WebSocket client'ı başlat
+        self.ws_client = BinanceWebSocket(testnet=testnet)
+        self.current_prices = {}
         
         logger.info("Binance API bağlantısı başlatıldı")
     
@@ -179,15 +185,23 @@ class BinanceClient:
         
         try:
             if method == "GET":
-                response = self.session.get(url, params=params)
+                response = self.session.get(url, params=params, timeout=10)
             elif method == "POST":
-                response = self.session.post(url, json=params)
+                response = self.session.post(url, json=params, timeout=10)
             elif method == "DELETE":
-                response = self.session.delete(url, params=params)
+                response = self.session.delete(url, params=params, timeout=10)
             else:
                 raise ValueError(f"Geçersiz HTTP metodu: {method}")
             
+            # Log rate limit info
+            if 'x-mbx-used-weight' in response.headers:
+                logger.debug(f"API weight used: {response.headers['x-mbx-used-weight']}")
+            
             response.raise_for_status()
+            
+            # Log response details for debugging
+            logger.debug(f"API response for {endpoint}: Status={response.status_code}, Headers={dict(response.headers)}")
+            
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"API isteği sırasında hata oluştu: {e}")
@@ -749,4 +763,120 @@ class BinanceClient:
             return None
         except Exception as e:
             logger.error(f"{symbol} bilgisi alınırken hata oluştu: {e}")
-            raise 
+            raise
+    
+    def get_historical_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start_str: Optional[str] = None,
+        end_str: Optional[str] = None,
+        limit: int = 500
+    ) -> List[List]:
+        """
+        Belirli bir sembol için geçmiş kline verilerini alır.
+        
+        Args:
+            symbol: İşlem sembolü (örn. "BTCUSDT")
+            interval: Zaman aralığı (örn. "1h", "4h", "1d")
+            start_str: Başlangıç zamanı (örn. "1 Jan, 2020")
+            end_str: Bitiş zamanı (örn. "1 Jan, 2021")
+            limit: Sonuç sayısı limiti
+            
+        Returns:
+            List[List]: Kline verileri listesi
+        """
+        endpoint = "/api/v3/klines"
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+        
+        if start_str:
+            params["startTime"] = int(pd.Timestamp(start_str).timestamp() * 1000)
+        if end_str:
+            params["endTime"] = int(pd.Timestamp(end_str).timestamp() * 1000)
+            
+        try:
+            klines = self._public_request("GET", endpoint, params)
+            return klines
+        except Exception as e:
+            logger.error(f"Geçmiş veriler alınırken hata oluştu: {e}")
+            raise
+    
+    def get_symbol_ticker(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get current price ticker for a symbol using the book ticker endpoint.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            
+        Returns:
+            Dict: Ticker information including current price
+        """
+        try:
+            # Use book ticker for more frequent updates
+            response = self._public_request("GET", "/api/v3/ticker/bookTicker", {"symbol": symbol})
+            
+            if not response or 'askPrice' not in response:
+                raise ValueError(f"Invalid response from Binance API for {symbol}")
+            
+            # Use ask price as current price
+            price = float(response['askPrice'])
+            
+            logger.debug(f"Got fresh ticker for {symbol}: ask={price}, bid={response['bidPrice']}")
+            
+            return {'price': price}
+            
+        except Exception as e:
+            logger.error(f"Failed to get ticker for {symbol}: {e}")
+            raise
+    
+    def get_current_price(self, symbol: str) -> float:
+        """
+        Belirli bir sembol için güncel fiyatı döndürür.
+        
+        Args:
+            symbol: Trading sembolü (örn. "BTCUSDT")
+            
+        Returns:
+            float: Güncel fiyat
+        """
+        return self.current_prices.get(symbol, 0.0)
+    
+    def subscribe_to_price_updates(self, symbol: str):
+        """
+        Belirli bir sembol için fiyat güncellemelerine abone olur.
+        
+        Args:
+            symbol: Trading sembolü (örn. "BTCUSDT")
+        """
+        stream = f"{symbol.lower()}@trade"
+        
+        def price_callback(data):
+            price = float(data['p'])
+            self.current_prices[symbol] = price
+            logger.debug(f"{symbol} güncel fiyat: {price}")
+        
+        self.ws_client.subscribe(stream, price_callback)
+        logger.info(f"{symbol} için fiyat güncellemelerine abone olundu")
+    
+    def unsubscribe_from_price_updates(self, symbol: str):
+        """
+        Belirli bir sembol için fiyat güncellemelerinden aboneliği kaldırır.
+        
+        Args:
+            symbol: Trading sembolü (örn. "BTCUSDT")
+        """
+        stream = f"{symbol.lower()}@trade"
+        self.ws_client.unsubscribe(stream)
+        logger.info(f"{symbol} için fiyat güncellemelerinden abonelik kaldırıldı")
+    
+    def close(self):
+        """
+        API client'ı kapatır ve kaynakları temizler.
+        """
+        self.ws_client.close()
+        self.session.close()
+        logger.info("Binance API client kapatıldı") 

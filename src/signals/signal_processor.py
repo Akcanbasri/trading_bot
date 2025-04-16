@@ -106,19 +106,48 @@ class SignalProcessor:
         
         # Her sembol ve zaman dilimi için stratejileri çalıştır
         for symbol in self.active_symbols:
+            # Force refresh current price
+            try:
+                current_price = self.data_collector.get_current_price(symbol)
+            except Exception as e:
+                logger.error(f"Failed to get current price for {symbol}: {e}")
+                continue
+                
             symbol_signals = {}
             
             for timeframe in self.timeframes:
+                # Force refresh market data
+                try:
+                    self.data_collector.refresh_data(symbol, timeframe)
+                except Exception as e:
+                    logger.error(f"Failed to refresh data for {symbol} {timeframe}: {e}")
+                    continue
+                    
                 timeframe_signals = {}
                 
                 for strategy_name, strategy in self.strategies.items():
                     try:
-                        signal = strategy.generate_signal(symbol, timeframe)
-                        timeframe_signals[strategy_name] = signal
+                        # Get previous signal for comparison
+                        prev_signal = None
+                        if (symbol in self.last_signals and 
+                            timeframe in self.last_signals[symbol] and 
+                            strategy_name in self.last_signals[symbol][timeframe]):
+                            prev_signal = self.last_signals[symbol][timeframe][strategy_name]
                         
-                        logger.debug(f"{symbol} {timeframe} için {strategy_name} "
-                                   f"stratejisi sinyali: {signal['signal']} "
-                                   f"(Güç: {signal['strength']})")
+                        # Generate new signal
+                        signal = strategy.generate_signal(symbol, timeframe)
+                        
+                        # Only update if signal has changed
+                        if signal != prev_signal:
+                            timeframe_signals[strategy_name] = signal
+                            logger.debug(f"{symbol} {timeframe} için {strategy_name} "
+                                       f"stratejisi sinyali değişti: {signal['signal']} "
+                                       f"(Güç: {signal['strength']}, "
+                                       f"Fiyat: {signal.get('current_price', 'N/A')})")
+                        else:
+                            # Keep previous signal if no change
+                            timeframe_signals[strategy_name] = prev_signal
+                        
                     except Exception as e:
                         logger.error(f"{strategy_name} stratejisi sinyal işlenirken hata: {e}")
                 

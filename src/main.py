@@ -7,14 +7,14 @@ import time
 import logging
 import threading
 from dotenv import load_dotenv
-from src.api.client import BinanceClient
-from src.data.market_data import MarketDataCollector
-from src.risk_management.risk_manager import RiskManager
-from src.order_management.order_executor import OrderExecutor
-from src.signals.signal_processor import SignalProcessor
-from src.strategies.combined_strategy import CombinedStrategy
-from src.utils.exceptions import InsufficientDataError
-from src.utils.logger import setup_logger
+from api.binance_client import BinanceClient
+from data.market_data import MarketDataCollector
+from risk_management.risk_manager import RiskManager
+from order_management.order_executor import OrderExecutor
+from signals.signal_processor import SignalProcessor
+from strategies.combined_strategy import CombinedStrategy
+from utils.exceptions import InsufficientDataError
+from utils.logger import setup_logger
 
 # .env dosyasını yükle
 load_dotenv()
@@ -43,15 +43,32 @@ def signal_processing_loop(signal_processor, symbol, timeframe, check_interval):
     signal_processor.set_symbols([symbol])
     signal_processor.set_timeframes([timeframe])
     
+    last_price = None
+    last_signal = None
+    
     while running:
         try:
+            # Force refresh market data
+            signal_processor.data_collector.refresh_data(symbol, timeframe)
+            
+            # Get fresh current price
+            current_price = signal_processor.data_collector.get_current_price(symbol)
+            
+            # Only log price changes
+            if current_price != last_price:
+                logger.info(f"Price update for {symbol}: {current_price}")
+                last_price = current_price
+            
             # Process signals
             signals = signal_processor.process_signals()
             
             if signals and symbol in signals and timeframe in signals[symbol]:
                 timeframe_signals = signals[symbol][timeframe]
                 for strategy_name, signal in timeframe_signals.items():
-                    logger.info(f"Yeni sinyal üretildi - Strateji: {strategy_name}, Sinyal: {signal}")
+                    # Only log if signal has changed
+                    if signal != last_signal:
+                        logger.info(f"Yeni sinyal üretildi - Strateji: {strategy_name}, Sinyal: {signal}")
+                        last_signal = signal
             
             # Belirtilen aralık kadar bekle
             time.sleep(check_interval)
@@ -59,6 +76,38 @@ def signal_processing_loop(signal_processor, symbol, timeframe, check_interval):
         except Exception as e:
             logger.error(f"Sinyal işleme döngüsünde hata: {str(e)}")
             time.sleep(check_interval)
+
+def test_api_connection(client, symbol):
+    """
+    Test Binance API connection and price updates.
+    
+    Args:
+        client: BinanceClient instance
+        symbol: Trading symbol to test
+    """
+    logger.info("Testing API connection...")
+    
+    try:
+        # Test server time
+        server_time = client._public_request("GET", "/api/v3/time")
+        logger.info(f"Server time: {server_time}")
+        
+        # Test ticker endpoint
+        ticker = client._public_request("GET", "/api/v3/ticker/bookTicker", {"symbol": symbol})
+        logger.info(f"Ticker data: {ticker}")
+        
+        # Test multiple price updates
+        for i in range(3):
+            price = client.get_symbol_ticker(symbol)
+            logger.info(f"Price update {i+1}: {price}")
+            time.sleep(1)
+            
+        logger.info("API connection test completed successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"API connection test failed: {e}")
+        return False
 
 def main():
     """
@@ -71,10 +120,14 @@ def main():
         
         # Binance client'ı başlat
         client = BinanceClient(
-            api_key=os.getenv("BINANCE_API_KEY"),
-            api_secret=os.getenv("BINANCE_API_SECRET"),
             testnet=os.getenv("USE_TESTNET", "True").lower() == "true"
         )
+        
+        # Test API connection
+        symbol = os.getenv("TRADING_SYMBOL", "DOGEUSDT")
+        if not test_api_connection(client, symbol):
+            logger.error("API connection test failed. Exiting...")
+            return
         
         # Market veri toplayıcıyı başlat
         data_collector = MarketDataCollector(client=client)

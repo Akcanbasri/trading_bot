@@ -21,8 +21,8 @@ class RSIMiddleBandStrategy(BaseStrategy):
         self,
         market_data: MarketDataCollector,
         period: int = 14,
-        positive_momentum: float = 70.0,
-        negative_momentum: float = 30.0,
+        positive_momentum: float = 50.0,
+        negative_momentum: float = 45.0,
         ema_period: int = 20
     ):
         """
@@ -31,8 +31,8 @@ class RSIMiddleBandStrategy(BaseStrategy):
         Args:
             market_data: Market veri toplayıcı nesnesi
             period: RSI hesaplama periyodu (varsayılan: 14)
-            positive_momentum: RSI üst eşik değeri (varsayılan: 70.0)
-            negative_momentum: RSI alt eşik değeri (varsayılan: 30.0)
+            positive_momentum: RSI üst eşik değeri (varsayılan: 50.0)
+            negative_momentum: RSI alt eşik değeri (varsayılan: 45.0)
             ema_period: EMA hesaplama periyodu (varsayılan: 20)
         """
         name = f"RSI_Middle_Band_{period}_{ema_period}"
@@ -129,8 +129,8 @@ class RSIMiddleBandStrategy(BaseStrategy):
             InsufficientDataError: Yeterli veri yoksa
         """
         try:
-            # Tarihsel verileri al
-            df = self.market_data.get_historical_data(symbol, timeframe)
+            # Tarihsel verileri al - use fresh data
+            df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
             
             if df.empty or len(df) < max(self.period + 1, self.ema_period):
                 raise InsufficientDataError(

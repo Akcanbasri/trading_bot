@@ -6,9 +6,9 @@ import logging
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
-from src.strategies.base_strategy import BaseStrategy
-from src.data.market_data import MarketDataCollector
-from src.utils.exceptions import InsufficientDataError
+from ..strategies.base_strategy import BaseStrategy
+from ..data.market_data import MarketDataCollector
+from ..utils.exceptions import InsufficientDataError
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,8 @@ class MACDStrategy(BaseStrategy):
         fast_period: int = 12,
         slow_period: int = 26,
         signal_period: int = 9,
-        histogram_threshold: float = 0.0
+        histogram_threshold: float = 0.0,
+        min_bars: int = 30
     ):
         """
         MACD stratejisi sınıfının başlatıcı metodu.
@@ -35,6 +36,7 @@ class MACDStrategy(BaseStrategy):
             slow_period: Yavaş EMA periyodu (varsayılan: 26)
             signal_period: Sinyal çizgisi periyodu (varsayılan: 9)
             histogram_threshold: Histogram eşik değeri (varsayılan: 0.0)
+            min_bars: Minimum gerekli bar sayısı (varsayılan: 30)
         """
         super().__init__(name="macd_strategy", market_data=market_data)
         
@@ -51,11 +53,12 @@ class MACDStrategy(BaseStrategy):
         self.slow_period = slow_period
         self.signal_period = signal_period
         self.histogram_threshold = histogram_threshold
+        self.min_bars = min_bars
         
         logger.info(
             f"MACDStrategy başlatıldı: fast_period={fast_period}, "
             f"slow_period={slow_period}, signal_period={signal_period}, "
-            f"histogram_threshold={histogram_threshold}"
+            f"histogram_threshold={histogram_threshold}, min_bars={min_bars}"
         )
     
     def calculate_macd(self, prices: List[float]) -> Dict[str, float]:
@@ -98,7 +101,7 @@ class MACDStrategy(BaseStrategy):
     
     def generate_signal(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
-        Verilen sembol ve zaman dilimi için trading sinyali üretir.
+        Verilen sembol ve zaman dilimi için MACD bazlı trading sinyali üretir.
         
         Args:
             symbol: Trading sembolü (örn. "DOGEUSDT")
@@ -111,10 +114,13 @@ class MACDStrategy(BaseStrategy):
             InsufficientDataError: Yeterli veri yoksa
         """
         try:
-            # Geçmiş verileri al
-            df = self.market_data.get_historical_data(symbol, timeframe)
-            if df.empty:
-                raise InsufficientDataError(f"{symbol} için yeterli veri yok")
+            # Tarihsel verileri al - use fresh data
+            df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
+            
+            if df.empty or len(df) < self.min_bars:
+                raise InsufficientDataError(
+                    f"{symbol} için yeterli veri yok. En az {self.min_bars} bar gerekli."
+                )
             
             # Kapanış fiyatlarını al
             prices = df["close"].tolist()

@@ -95,6 +95,9 @@ class CombinedStrategy(BaseStrategy):
         self.macd_signal_period = macd_signal_period
         self.macd_histogram_threshold = macd_histogram_threshold
         
+        # Lower the minimum signal strength threshold
+        self.min_signal_strength = 0.4  # Changed from default 0.6 to 0.4
+        
         logger.info(f"Initialized Combined Strategy with parameters: "
                    f"Fibo({fibo_left_bars}/{fibo_right_bars}), "
                    f"RSI({rsi_period}/{rsi_positive_momentum}/{rsi_negative_momentum}/{rsi_ema_period}), "
@@ -115,7 +118,26 @@ class CombinedStrategy(BaseStrategy):
             InsufficientDataError: If there is not enough data for analysis
         """
         try:
-            # Get signals from individual strategies
+            # Get fresh current price
+            try:
+                current_price = self.market_data.get_current_price(symbol)
+                logger.debug(f"Fresh price for {symbol}: {current_price}")
+            except Exception as e:
+                logger.error(f"Failed to get fresh price for {symbol}: {e}")
+                raise
+            
+            # Get fresh historical data
+            try:
+                df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
+                if df.empty:
+                    logger.warning(f"No data available for {symbol} {timeframe}")
+                    raise InsufficientDataError(f"No data for {symbol} {timeframe}")
+                logger.debug(f"Got fresh data for {symbol} {timeframe}, rows: {len(df)}")
+            except Exception as e:
+                logger.error(f"Failed to get historical data for {symbol} {timeframe}: {e}")
+                raise
+            
+            # Get signals from individual strategies with fresh data
             fibo_signal = self.fibo_strategy.generate_signal(symbol, timeframe)
             rsi_signal = self.rsi_strategy.generate_signal(symbol, timeframe)
             macd_signal = self.macd_strategy.generate_signal(symbol, timeframe)
@@ -130,32 +152,46 @@ class CombinedStrategy(BaseStrategy):
             rsi_strength = rsi_signal.get("strength", 0.0)
             macd_strength = macd_signal.get("strength", 0.0)
             
-            # Combine signals using weighted voting
-            signals = {
+            # Combine signals using weighted approach
+            signal_weights = {
                 "LONG": 0,
                 "SHORT": 0,
                 "NEUTRAL": 0
             }
             
-            # Add weighted votes
-            signals[fibo_direction] += fibo_strength
-            signals[rsi_direction] += rsi_strength
-            signals[macd_direction] += macd_strength
+            # Add weighted contributions from each strategy
+            if fibo_direction == "LONG":
+                signal_weights["LONG"] += fibo_strength * 0.4  # 40% weight
+            elif fibo_direction == "SHORT":
+                signal_weights["SHORT"] += fibo_strength * 0.4
             
-            # Determine final direction
-            final_direction = max(signals.items(), key=lambda x: x[1])[0]
+            if rsi_direction == "LONG":
+                signal_weights["LONG"] += rsi_strength * 0.3  # 30% weight
+            elif rsi_direction == "SHORT":
+                signal_weights["SHORT"] += rsi_strength * 0.3
             
-            # Calculate combined strength
-            total_strength = sum(signals.values())
-            combined_strength = signals[final_direction] / total_strength if total_strength > 0 else 0.0
+            if macd_direction == "LONG":
+                signal_weights["LONG"] += macd_strength * 0.3  # 30% weight
+            elif macd_direction == "SHORT":
+                signal_weights["SHORT"] += macd_strength * 0.3
+            
+            # Determine final signal
+            max_weight = max(signal_weights.values())
+            if max_weight > 0:
+                final_signal = max(signal_weights.items(), key=lambda x: x[1])[0]
+                signal_strength = max_weight
+            else:
+                final_signal = "NEUTRAL"
+                signal_strength = 0.0
             
             # Create combined signal
             combined_signal = {
-                "signal": final_direction,
-                "strength": combined_strength,
+                "signal": final_signal,
+                "strength": signal_strength,
                 "timestamp": pd.Timestamp.now(),
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "current_price": current_price,
                 "strategies": {
                     "fibobull": fibo_signal,
                     "rsi": rsi_signal,
@@ -163,14 +199,10 @@ class CombinedStrategy(BaseStrategy):
                 }
             }
             
-            # Store the last signal
-            self.last_signal = combined_signal
-            
-            logger.info(f"Generated combined signal: {combined_signal}")
             return combined_signal
             
         except Exception as e:
-            logger.error(f"Error generating combined signal: {str(e)}")
+            logger.error(f"Error generating combined signal: {e}")
             raise
     
     def get_last_signal(self) -> Dict[str, Any]:

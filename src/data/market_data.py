@@ -4,8 +4,10 @@ Piyasa verilerini toplama ve işleme modülü.
 from typing import Dict, List, Optional, Any, Union
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from loguru import logger
+import os
+import time
 
 from src.api.client import BinanceClient
 
@@ -22,7 +24,15 @@ class MarketDataCollector:
         """
         self.client = client
         self.data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
-        logger.info("Market veri toplayıcı başlatıldı")
+        self.price_cache: Dict[str, Dict[str, Any]] = {}  # {symbol: {'price': float, 'timestamp': datetime}}
+        self.price_cache_expiry = timedelta(seconds=1)  # Cache prices for 1 second
+        self.last_update_time: Dict[str, Dict[str, datetime]] = {}
+        
+        # Verify we're using live data
+        if not os.getenv('USE_TESTNET', 'False').lower() == 'true':
+            logger.info("Market data collector initialized for live trading")
+        else:
+            logger.warning("Market data collector initialized for testnet - this should not be used in production!")
     
     def get_historical_data(
         self,
@@ -95,43 +105,107 @@ class MarketDataCollector:
             logger.error(f"{symbol} için {interval} verisi alınırken hata: {e}")
             return pd.DataFrame()
     
-    def refresh_data(self, symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
+    def refresh_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
         """
-        Önbellekteki veriyi yeniler ve en güncel verileri getirir.
+        Belirtilen sembol ve zaman dilimi için piyasa verisini yeniler.
         
         Args:
-            symbol: İşlem sembolü (örn. "BTCUSDT")
-            interval: Zaman aralığı (örn. "1h", "4h", "1d")
-            limit: Alınacak veri sayısı
+            symbol: Trading sembolü
+            timeframe: Zaman dilimi
             
         Returns:
-            pd.DataFrame: Güncel veri DataFrame'i
+            pd.DataFrame: Güncellenmiş veri
         """
-        logger.debug(f"{symbol} {interval} verisi yenileniyor...")
-        return self.get_historical_data(
-            symbol=symbol,
-            interval=interval,
-            limit=limit,
-            use_cache=False
-        )
+        try:
+            # Get current timestamp
+            current_time = datetime.now()
+            
+            # Check if we need to refresh based on timeframe
+            if symbol in self.last_update_time and timeframe in self.last_update_time[symbol]:
+                last_update = self.last_update_time[symbol][timeframe]
+                time_diff = (current_time - last_update).total_seconds()
+                
+                # Define minimum refresh intervals for different timeframes
+                min_intervals = {
+                    "1m": 30,   # 30 seconds
+                    "5m": 60,   # 1 minute
+                    "15m": 180,  # 3 minutes
+                    "30m": 300,  # 5 minutes
+                    "1h": 600,   # 10 minutes
+                    "4h": 1800,  # 30 minutes
+                    "1d": 3600   # 1 hour
+                }
+                
+                min_interval = min_intervals.get(timeframe, 60)  # Default to 1 minute
+                
+                if time_diff < min_interval:
+                    # Return cached data if refresh interval not reached
+                    return self.data_cache[symbol][timeframe]
+            
+            # Fetch new data
+            new_data = self._fetch_historical_data(symbol, timeframe)
+            
+            if new_data is not None and not new_data.empty:
+                # Update cache
+                if symbol not in self.data_cache:
+                    self.data_cache[symbol] = {}
+                self.data_cache[symbol][timeframe] = new_data
+                
+                # Update last update time
+                if symbol not in self.last_update_time:
+                    self.last_update_time[symbol] = {}
+                self.last_update_time[symbol][timeframe] = current_time
+                
+                logger.debug(f"Veri yenilendi - Sembol: {symbol}, Zaman dilimi: {timeframe}, Satır sayısı: {len(new_data)}")
+                return new_data
+            else:
+                logger.warning(f"Veri yenilenemedi - Sembol: {symbol}, Zaman dilimi: {timeframe}")
+                return pd.DataFrame()
+            
+        except Exception as e:
+            logger.error(f"Veri yenileme hatası - Sembol: {symbol}, Zaman dilimi: {timeframe}, Hata: {str(e)}")
+            return pd.DataFrame()
     
     def get_current_price(self, symbol: str) -> float:
         """
-        Bir sembol için güncel fiyatı alır.
+        Get current price for a symbol.
         
         Args:
-            symbol: İşlem sembolü (örn. "BTCUSDT")
+            symbol: Trading symbol (e.g., "BTCUSDT")
             
         Returns:
-            float: Güncel fiyat
+            float: Current price
         """
         try:
-            ticker = self.client.client.get_symbol_ticker(symbol=symbol)
+            current_time = time.time()
+            
+            # Check cache first
+            if symbol in self.price_cache:
+                cache_data = self.price_cache[symbol]
+                # Check if cache is still valid (less than 1 second old)
+                if current_time - cache_data['timestamp'] < 1.0:  # 1 second expiry
+                    logger.debug(f"Using cached price for {symbol}: {cache_data['price']}")
+                    return cache_data['price']
+            
+            # Get fresh price from Binance
+            ticker = self.client.get_symbol_ticker(symbol)
             price = float(ticker['price'])
-            logger.debug(f"{symbol} güncel fiyat: {price}")
+            
+            # Update cache
+            self.price_cache[symbol] = {
+                'price': price,
+                'timestamp': current_time
+            }
+            
+            logger.debug(f"Updated price for {symbol}: {price}")
             return price
+            
         except Exception as e:
-            logger.error(f"{symbol} için güncel fiyat alınamadı: {e}")
+            logger.error(f"Failed to get current price for {symbol}: {e}")
+            # Return cached price if available
+            if symbol in self.price_cache:
+                logger.warning(f"Using stale cached price for {symbol} due to error")
+                return self.price_cache[symbol]['price']
             raise
     
     def get_order_book(self, symbol: str, limit: int = 10) -> Dict[str, List]:
@@ -150,4 +224,68 @@ class MarketDataCollector:
             return order_book
         except Exception as e:
             logger.error(f"{symbol} için emir defteri alınamadı: {e}")
-            raise 
+            raise
+    
+    def _fetch_historical_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        """
+        Belirtilen sembol ve zaman dilimi için tarihsel verileri getirir.
+        
+        Args:
+            symbol: Trading sembolü
+            timeframe: Zaman dilimi
+            
+        Returns:
+            pd.DataFrame: Tarihsel veri DataFrame'i
+        """
+        try:
+            # Map timeframe to Binance interval format
+            interval_map = {
+                "1m": "1m",
+                "5m": "5m",
+                "15m": "15m",
+                "30m": "30m",
+                "1h": "1h",
+                "4h": "4h",
+                "1d": "1d"
+            }
+            
+            interval = interval_map.get(timeframe, "15m")
+            
+            # Get historical data from Binance
+            klines = self.client.get_historical_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=500  # Get enough data for indicators
+            )
+            
+            if not klines:
+                logger.warning(f"{symbol} için {timeframe} verisi bulunamadı")
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # Convert numeric columns
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'quote_asset_volume']
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Set timestamp as index
+            df.set_index('timestamp', inplace=True)
+            
+            # Sort by timestamp
+            df.sort_index(inplace=True)
+            
+            logger.info(f"{symbol} için {timeframe} verisi alındı. Satır sayısı: {len(df)}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"{symbol} için {timeframe} verisi alınırken hata: {str(e)}")
+            return pd.DataFrame() 

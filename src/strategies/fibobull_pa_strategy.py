@@ -259,8 +259,8 @@ class FibobullPAStrategy(BaseStrategy):
             InsufficientDataError: Yeterli veri yoksa
         """
         try:
-            # Tarihsel verileri al
-            df = self.market_data.get_historical_data(symbol, timeframe)
+            # Tarihsel verileri al - use fresh data
+            df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
             
             if df.empty or len(df) < self.required_data_length:
                 raise InsufficientDataError(

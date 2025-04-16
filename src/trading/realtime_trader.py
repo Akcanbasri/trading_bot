@@ -12,6 +12,7 @@ import threading
 from uuid import uuid4
 import traceback
 from loguru import logger
+import os
 
 from src.data.market_data import MarketDataCollector
 from src.strategies.base_strategy import BaseStrategy
@@ -27,16 +28,16 @@ class RealTimeTrader:
         client: BinanceClient,
         market_data: MarketDataCollector,
         strategy: BaseStrategy,
-        trading_mode: str = "paper",  # "live" or "paper"
-        initial_capital: float = 10000.0,  # For paper trading
-        position_size_type: str = "percentage",  # "percentage" or "fixed"
-        position_size_value: float = 5.0,  # 5% of capital or fixed amount
+        trading_mode: str = "live",  # Changed default to "live"
+        initial_capital: float = 10000.0,
+        position_size_type: str = "percentage",
+        position_size_value: float = 5.0,
         use_stop_loss: bool = True,
         stop_loss_percentage: float = 2.0,
         use_take_profit: bool = True,
         take_profit_percentage: float = 4.0,
         max_positions: int = 5,
-        check_interval_seconds: int = 60
+        check_interval_seconds: int = 10
     ):
         """
         Initialize RealTimeTrader.
@@ -73,7 +74,7 @@ class RealTimeTrader:
         
         # State variables
         self.is_running = False
-        self.open_positions: Dict[str, Trade] = {}  # Symbol -> Trade
+        self.open_positions: Dict[str, Trade] = {}
         self.all_trades: List[Trade] = []
         self.symbols_watching: Set[str] = set()
         self.last_update_time: Dict[str, datetime] = {}
@@ -87,6 +88,14 @@ class RealTimeTrader:
                 self.initial_capital = balance
                 self.current_capital = balance
                 logger.info(f"Live trading initialized with {balance} USDT balance")
+                
+                # Set up futures account if needed
+                if os.getenv('USE_FUTURES', 'False').lower() == 'true':
+                    self.client.futures_change_leverage(
+                        symbol=os.getenv('TRADING_SYMBOL', 'DOGEUSDT'),
+                        leverage=int(os.getenv('DEFAULT_LEVERAGE', '5'))
+                    )
+                    logger.info(f"Futures leverage set to {os.getenv('DEFAULT_LEVERAGE', '5')}x")
             except Exception as e:
                 logger.error(f"Failed to fetch account balance: {e}")
                 raise
@@ -173,7 +182,7 @@ class RealTimeTrader:
                 
                 # First check existing positions
                 if symbol in self.open_positions:
-                    self._check_position(symbol, df)
+                    self._check_position(symbol)
                 # Then check for new signals if we have capacity
                 elif len(self.open_positions) < self.max_positions:
                     self._check_for_signals(symbol, timeframe)
@@ -181,66 +190,103 @@ class RealTimeTrader:
                 logger.error(f"Error processing {symbol}: {e}")
                 logger.error(traceback.format_exc())
     
-    def _check_position(self, symbol: str, data: pd.DataFrame) -> None:
+    def _check_position(self, symbol: str) -> None:
         """
-        Check and update an existing position.
+        Mevcut pozisyonu kontrol eder ve gerekirse kapatır.
         
         Args:
-            symbol: Trading symbol
-            data: Latest market data
+            symbol: İşlem sembolü
         """
-        if symbol not in self.open_positions:
-            return
-            
-        trade = self.open_positions[symbol]
-        current_price = data.iloc[-1]['close']
-        
-        # Check for stop loss
-        if self.use_stop_loss and trade.stop_loss is not None:
-            if (trade.direction == "LONG" and current_price <= trade.stop_loss) or \
-               (trade.direction == "SHORT" and current_price >= trade.stop_loss):
-                self._close_position(symbol, current_price, "stop_loss")
+        try:
+            position = self.open_positions.get(symbol)
+            if not position:
                 return
-        
-        # Check for take profit
-        if self.use_take_profit and trade.take_profit is not None:
-            if (trade.direction == "LONG" and current_price >= trade.take_profit) or \
-               (trade.direction == "SHORT" and current_price <= trade.take_profit):
-                self._close_position(symbol, current_price, "take_profit")
-                return
-        
-        # Check for exit signals from strategy
-        signal = self.strategy.generate_signal(symbol, data)
-        if signal:
-            signal_type = signal.get('signal', None)
+                
+            # Get current price instead of using historical data
+            current_price = self.market_data.get_current_price(symbol)
             
-            # If holding LONG and signal is SELL or holding SHORT and signal is BUY
-            if (trade.direction == "LONG" and signal_type == "SELL") or \
-               (trade.direction == "SHORT" and signal_type == "BUY"):
-                self._close_position(symbol, current_price, "signal")
+            # Calculate profit/loss
+            entry_price = position.entry_price
+            quantity = position.quantity
+            side = position.direction
+            
+            if side == 'LONG':
+                pnl = (current_price - entry_price) * quantity
+                pnl_percentage = ((current_price - entry_price) / entry_price) * 100
+            else:  # SHORT
+                pnl = (entry_price - current_price) * quantity
+                pnl_percentage = ((entry_price - current_price) / entry_price) * 100
+                
+            logger.info(f"{symbol} pozisyon durumu - Giriş: {entry_price}, Mevcut: {current_price}, PNL: {pnl:.2f} ({pnl_percentage:.2f}%)")
+            
+            # Check stop loss and take profit
+            if pnl_percentage <= -self.stop_loss_percentage:
+                logger.info(f"{symbol} stop loss tetiklendi: {pnl_percentage:.2f}%")
+                self._close_position(position, current_price)
+            elif pnl_percentage >= self.take_profit_percentage:
+                logger.info(f"{symbol} take profit tetiklendi: {pnl_percentage:.2f}%")
+                self._close_position(position, current_price)
+                
+        except Exception as e:
+            logger.error(f"Pozisyon kontrolü sırasında hata: {e}")
     
     def _check_for_signals(self, symbol: str, timeframe: str) -> None:
         """
-        Check for new entry signals.
+        Belirtilen sembol için sinyal kontrolü yapar.
         
         Args:
-            symbol: Trading symbol
-            timeframe: Timeframe for analysis
+            symbol: İşlem sembolü
+            timeframe: Zaman dilimi
         """
-        # Check if we can open more positions
-        if len(self.open_positions) >= self.max_positions:
-            return
+        try:
+            # Get historical data for strategy
+            df = self.market_data.get_historical_data(symbol, timeframe)
+            if df is None or df.empty:
+                logger.warning(f"{symbol} için veri alınamadı")
+                return
+                
+            # Get current price
+            current_price = self.market_data.get_current_price(symbol)
+            if current_price is None:
+                logger.warning(f"{symbol} için güncel fiyat alınamadı")
+                return
+                
+            # Generate signal
+            signal = self.strategy.generate_signal(symbol, df)
+            if not signal:
+                return
+                
+            signal_type = signal.get('signal')
+            if not signal_type:
+                return
+                
+            # Log signal
+            logger.info(f"{symbol} için {signal_type} sinyali alındı - Fiyat: {current_price}")
             
-        # Generate signal
-        signal = self.strategy.generate_signal(symbol, timeframe)
+            # Execute trade based on signal
+            if signal_type == "BUY":
+                self._open_position(symbol, "LONG", current_price)
+            elif signal_type == "SELL":
+                self._open_position(symbol, "SHORT", current_price)
+                
+        except Exception as e:
+            logger.error(f"Sinyal kontrolü sırasında hata: {e}")
+    
+    def _open_position(self, symbol: str, direction: str, current_price: float) -> None:
+        """
+        Yeni pozisyon açar.
         
-        if not signal:
-            return
-            
-        signal_type = signal.get('signal', None)
-        current_price = self.market_data.get_current_price(symbol)
-        
-        if signal_type == "BUY":
+        Args:
+            symbol: İşlem sembolü
+            direction: İşlem yönü (LONG/SHORT)
+            current_price: Giriş fiyatı
+        """
+        try:
+            # Check if we can open more positions
+            if len(self.open_positions) >= self.max_positions:
+                logger.warning(f"Maksimum pozisyon sayısına ulaşıldı ({self.max_positions})")
+                return
+                
             # Calculate position size
             if self.position_size_type == "percentage":
                 position_value = self.current_capital * (self.position_size_value / 100)
@@ -250,196 +296,75 @@ class RealTimeTrader:
             quantity = position_value / current_price
             
             # Calculate stop loss and take profit prices
-            stop_loss_price = current_price * (1 - (self.stop_loss_percentage / 100)) if self.use_stop_loss else None
-            take_profit_price = current_price * (1 + (self.take_profit_percentage / 100)) if self.use_take_profit else None
-            
-            # Open position
-            self._open_position(
-                symbol=symbol,
-                price=current_price,
-                direction="LONG",
-                quantity=quantity,
-                stop_loss=stop_loss_price,
-                take_profit=take_profit_price
-            )
-        
-        elif signal_type == "SHORT":
-            # Calculate position size
-            if self.position_size_type == "percentage":
-                position_value = self.current_capital * (self.position_size_value / 100)
-            else:  # fixed
-                position_value = min(self.position_size_value, self.current_capital)
+            if direction == "LONG":
+                stop_loss_price = current_price * (1 - (self.stop_loss_percentage / 100)) if self.use_stop_loss else None
+                take_profit_price = current_price * (1 + (self.take_profit_percentage / 100)) if self.use_take_profit else None
+            else:  # SHORT
+                stop_loss_price = current_price * (1 + (self.stop_loss_percentage / 100)) if self.use_stop_loss else None
+                take_profit_price = current_price * (1 - (self.take_profit_percentage / 100)) if self.use_take_profit else None
                 
-            quantity = position_value / current_price
+            # Create position object
+            position = {
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': current_price,
+                'quantity': quantity,
+                'stop_loss': stop_loss_price,
+                'take_profit': take_profit_price,
+                'entry_time': datetime.now()
+            }
             
-            # Calculate stop loss and take profit prices
-            stop_loss_price = current_price * (1 + (self.stop_loss_percentage / 100)) if self.use_stop_loss else None
-            take_profit_price = current_price * (1 - (self.take_profit_percentage / 100)) if self.use_take_profit else None
+            # Add to open positions
+            self.open_positions.append(position)
             
-            # Open position
-            self._open_position(
-                symbol=symbol,
-                price=current_price,
-                direction="SHORT",
-                quantity=quantity,
-                stop_loss=stop_loss_price,
-                take_profit=take_profit_price
-            )
+            # Log position
+            logger.info(f"Yeni pozisyon açıldı: {symbol} {direction} - Fiyat: {current_price}, "
+                       f"Miktar: {quantity:.8f}, Stop Loss: {stop_loss_price}, Take Profit: {take_profit_price}")
+                       
+        except Exception as e:
+            logger.error(f"Pozisyon açma sırasında hata: {e}")
     
-    def _open_position(
-        self,
-        symbol: str,
-        price: float,
-        direction: str,
-        quantity: float,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None
-    ) -> None:
+    def _close_position(self, position: dict, current_price: float) -> None:
         """
-        Open a new position.
+        Pozisyonu kapatır ve kar/zarar hesaplar.
         
         Args:
-            symbol: Trading symbol
-            price: Entry price
-            direction: Trade direction ('LONG' or 'SHORT')
-            quantity: Trade quantity
-            stop_loss: Stop loss price (optional)
-            take_profit: Take profit price (optional)
+            position: Kapatılacak pozisyon
+            current_price: Çıkış fiyatı
         """
-        trade_id = str(uuid4())
-        entry_time = datetime.now()
-        
-        if self.trading_mode == "live":
-            try:
-                # Execute order through Binance API
-                side = "BUY" if direction == "LONG" else "SELL"
-                order = self.client.create_order(
-                    symbol=symbol,
-                    side=side,
-                    type="MARKET",
-                    quantity=quantity
-                )
+        try:
+            # Calculate profit/loss
+            if position['direction'] == "LONG":
+                pnl = (current_price - position['entry_price']) * position['quantity']
+            else:  # SHORT
+                pnl = (position['entry_price'] - current_price) * position['quantity']
                 
-                # Get actual execution price and quantity
-                price = float(order['fills'][0]['price'])
-                actual_quantity = sum(float(fill['qty']) for fill in order['fills'])
-                
-                # Create stop loss order if needed
-                if self.use_stop_loss and stop_loss is not None:
-                    stop_side = "SELL" if direction == "LONG" else "BUY"
-                    self.client.create_order(
-                        symbol=symbol,
-                        side=stop_side,
-                        type="STOP_LOSS_LIMIT",
-                        timeInForce="GTC",
-                        quantity=actual_quantity,
-                        price=stop_loss * 0.99 if direction == "LONG" else stop_loss * 1.01,  # Buffer for execution
-                        stopPrice=stop_loss
-                    )
-                
-                # Create take profit order if needed
-                if self.use_take_profit and take_profit is not None:
-                    take_profit_side = "SELL" if direction == "LONG" else "BUY"
-                    self.client.create_order(
-                        symbol=symbol,
-                        side=take_profit_side,
-                        type="TAKE_PROFIT_LIMIT",
-                        timeInForce="GTC",
-                        quantity=actual_quantity,
-                        price=take_profit * 1.01 if direction == "LONG" else take_profit * 0.99,  # Buffer for execution
-                        stopPrice=take_profit
-                    )
-                
-                logger.info(f"Opened {direction} position for {symbol} at {price} ({actual_quantity} units)")
-                
-            except Exception as e:
-                logger.error(f"Failed to open position: {e}")
-                return
-        else:
-            # Paper trading
-            actual_quantity = quantity
-            logger.info(f"[PAPER] Opened {direction} position for {symbol} at {price} ({actual_quantity} units)")
-        
-        # Create trade object
-        trade = Trade(
-            symbol=symbol,
-            entry_time=entry_time,
-            entry_price=price,
-            direction=direction,
-            quantity=actual_quantity,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            strategy_name=self.strategy.name,
-            trade_id=trade_id,
-            status="OPEN"
-        )
-        
-        # Update state
-        self.open_positions[symbol] = trade
-        self.all_trades.append(trade)
-        
-        # Decrease available capital (for paper trading)
-        if self.trading_mode == "paper":
-            self.current_capital -= price * quantity
-    
-    def _close_position(
-        self,
-        symbol: str,
-        price: float,
-        reason: str
-    ) -> None:
-        """
-        Close an existing position.
-        
-        Args:
-            symbol: Trading symbol
-            price: Exit price
-            reason: Reason for closing
-        """
-        if symbol not in self.open_positions:
-            logger.warning(f"No open position for {symbol} to close")
-            return
+            # Update capital
+            self.current_capital += pnl
             
-        trade = self.open_positions[symbol]
-        exit_time = datetime.now()
-        
-        if self.trading_mode == "live":
-            try:
-                # Execute order through Binance API
-                side = "SELL" if trade.direction == "LONG" else "BUY"
-                order = self.client.create_order(
-                    symbol=symbol,
-                    side=side,
-                    type="MARKET",
-                    quantity=trade.quantity
-                )
-                
-                # Cancel any existing stop-loss or take-profit orders
-                open_orders = self.client.get_open_orders(symbol=symbol)
-                for order in open_orders:
-                    self.client.cancel_order(symbol=symbol, order_id=order['orderId'])
-                
-                # Get actual execution price
-                price = float(order['fills'][0]['price'])
-                
-                logger.info(f"Closed {trade.direction} position for {symbol} at {price}. Reason: {reason}")
-                
-            except Exception as e:
-                logger.error(f"Failed to close position: {e}")
-                return
-        else:
-            # Paper trading
-            logger.info(f"[PAPER] Closed {trade.direction} position for {symbol} at {price}. Reason: {reason}")
-        
-        # Close the trade
-        trade.close(exit_time, price)
-        
-        # Update capital (for paper trading)
-        if self.trading_mode == "paper" and trade.pnl:
-            self.current_capital += price * trade.quantity
-        
-        # Update trade list and remove from open positions
-        del self.open_positions[symbol]
+            # Log position close
+            logger.info(f"Pozisyon kapatıldı: {position['symbol']} {position['direction']} - "
+                       f"Giriş: {position['entry_price']}, Çıkış: {current_price}, "
+                       f"Kar/Zarar: {pnl:.2f} USDT")
+                       
+            # Remove from open positions
+            self.open_positions.remove(position)
+            
+            # Update trade history
+            trade = {
+                'symbol': position['symbol'],
+                'direction': position['direction'],
+                'entry_price': position['entry_price'],
+                'exit_price': current_price,
+                'quantity': position['quantity'],
+                'pnl': pnl,
+                'entry_time': position['entry_time'],
+                'exit_time': datetime.now()
+            }
+            self.all_trades.append(trade)
+            
+        except Exception as e:
+            logger.error(f"Pozisyon kapatma sırasında hata: {e}")
     
     def get_performance_metrics(self) -> Dict[str, Any]:
         """
@@ -521,7 +446,7 @@ class RealTimeTrader:
         # Close position if open
         if symbol in self.open_positions:
             current_price = self.market_data.get_current_price(symbol)
-            self._close_position(symbol, current_price, "symbol_removed")
+            self._close_position(self.open_positions[symbol], current_price)
     
     def get_trader_status(self) -> Dict[str, Any]:
         """
