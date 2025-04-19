@@ -1,185 +1,167 @@
 """
-RSI ve EMA kullanarak trading sinyalleri üreten strateji modülü.
+RSI Middle Band Strategy implementation.
+This strategy uses RSI with middle band levels to identify momentum shifts.
 """
-import logging
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+from loguru import logger
 from src.strategies.base_strategy import BaseStrategy
 from src.data.market_data import MarketDataCollector
-from src.utils.exceptions import InsufficientDataError
 
-logger = logging.getLogger(__name__)
 
 class RSIMiddleBandStrategy(BaseStrategy):
     """
-    RSI ve EMA kullanarak alım/satım sinyalleri üreten strateji sınıfı.
-    RSI'ın orta bandı (50) etrafındaki hareketleri analiz eder.
+    RSI Middle Band Strategy implementation.
+    Uses RSI with middle band levels to identify momentum shifts and generate trading signals.
     """
-    
+
     def __init__(
         self,
         market_data: MarketDataCollector,
         period: int = 14,
         positive_momentum: float = 50.0,
         negative_momentum: float = 45.0,
-        ema_period: int = 20
+        ema_period: int = 5,
     ):
         """
-        RSI Middle Band strateji sınıfının başlatıcı metodu.
-        
+        Initialize the RSI Middle Band strategy.
+
         Args:
-            market_data: Market veri toplayıcı nesnesi
-            period: RSI hesaplama periyodu (varsayılan: 14)
-            positive_momentum: RSI üst eşik değeri (varsayılan: 50.0)
-            negative_momentum: RSI alt eşik değeri (varsayılan: 45.0)
-            ema_period: EMA hesaplama periyodu (varsayılan: 20)
+            market_data: MarketDataCollector instance
+            period: RSI calculation period
+            positive_momentum: Upper threshold for positive momentum
+            negative_momentum: Lower threshold for negative momentum
+            ema_period: Period for EMA calculation
         """
-        name = f"RSI_Middle_Band_{period}_{ema_period}"
-        super().__init__(name=name, market_data=market_data)
-        
+        super().__init__("RSI Middle Band Strategy", market_data)
         self.period = period
         self.positive_momentum = positive_momentum
         self.negative_momentum = negative_momentum
         self.ema_period = ema_period
-        
-        logger.info(
-            f"RSIMiddleBandStrategy başlatıldı: period={period}, "
-            f"positive_momentum={positive_momentum}, negative_momentum={negative_momentum}, "
-            f"ema_period={ema_period}"
-        )
-    
-    def calculate_rsi(self, prices: List[float]) -> float:
+        self.last_signal = None
+        self.is_long = False
+        self.is_short = False
+
+    def calculate_rsi(self, df: pd.DataFrame) -> pd.Series:
         """
-        RSI (Relative Strength Index) değerini hesaplar.
-        
+        Calculate RSI indicator.
+
         Args:
-            prices: Kapanış fiyatları listesi
-            
+            df: DataFrame with OHLCV data
+
         Returns:
-            float: Hesaplanan RSI değeri
-            
-        Raises:
-            InsufficientDataError: Yeterli veri yoksa
+            Series containing RSI values
         """
-        if len(prices) < self.period + 1:
-            raise InsufficientDataError(
-                f"RSI hesaplaması için en az {self.period + 1} fiyat gerekli."
-            )
-        
-        # Fiyat değişimlerini hesapla
-        deltas = np.diff(prices)
-        
-        # Pozitif ve negatif değişimleri ayır
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        
-        # İlk ortalama kazanç ve kayıpları hesapla
-        avg_gain = np.mean(gains[:self.period])
-        avg_loss = np.mean(losses[:self.period])
-        
-        # Sonraki değerler için üssel ortalama kullan
-        for i in range(self.period, len(deltas)):
-            avg_gain = (avg_gain * (self.period - 1) + gains[i]) / self.period
-            avg_loss = (avg_loss * (self.period - 1) + losses[i]) / self.period
-        
-        # RSI hesapla
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        
+        close = df["close"]
+        delta = close.diff()
+
+        # Separate gains and losses
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.period).mean()
+
+        # Calculate RS and RSI
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+
         return rsi
-    
-    def calculate_ema(self, prices: List[float]) -> float:
+
+    def calculate_ema(self, df: pd.DataFrame, period: int) -> pd.Series:
         """
-        EMA (Exponential Moving Average) değerini hesaplar.
-        
+        Calculate EMA indicator.
+
         Args:
-            prices: Kapanış fiyatları listesi
-            
+            df: DataFrame with OHLCV data
+            period: EMA period
+
         Returns:
-            float: Hesaplanan EMA değeri
-            
-        Raises:
-            InsufficientDataError: Yeterli veri yoksa
+            Series containing EMA values
         """
-        if len(prices) < self.ema_period:
-            raise InsufficientDataError(
-                f"EMA hesaplaması için en az {self.ema_period} fiyat gerekli."
-            )
-        
-        # EMA hesapla
-        ema = pd.Series(prices).ewm(span=self.ema_period, adjust=False).mean()
-        return ema.iloc[-1]
-    
+        return df["close"].ewm(span=period, adjust=False).mean()
+
     def generate_signal(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
-        Verilen sembol ve zaman dilimi için trading sinyali üretir.
-        
+        Generate trading signals based on RSI Middle Band strategy.
+
         Args:
-            symbol: Trading sembolü (örn. "DOGEUSDT")
-            timeframe: Zaman dilimi (örn. "15m", "1h", "4h", "1d")
-            
+            symbol: Trading pair symbol
+            timeframe: Timeframe for analysis
+
         Returns:
-            Dict[str, Any]: Sinyal bilgilerini içeren sözlük
-            
-        Raises:
-            InsufficientDataError: Yeterli veri yoksa
+            Dictionary containing signal information
         """
         try:
-            # Tarihsel verileri al - use fresh data
-            df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
-            
-            if df.empty or len(df) < max(self.period + 1, self.ema_period):
-                raise InsufficientDataError(
-                    f"{symbol} için yeterli veri yok. "
-                    f"En az {max(self.period + 1, self.ema_period)} bar gerekli."
-                )
-            
-            # Kapanış fiyatlarını al
-            prices = df["close"].tolist()
-            
-            # RSI ve EMA değerlerini hesapla
-            rsi = self.calculate_rsi(prices)
-            ema = self.calculate_ema(prices)
-            current_price = prices[-1]
-            
-            # Sinyal üret
+            # Get historical data
+            df = self.market_data.get_historical_data(symbol, timeframe)
+            if df.empty:
+                raise ValueError(f"No data available for {symbol} {timeframe}")
+
+            # Calculate indicators
+            rsi = self.calculate_rsi(df)
+            ema = self.calculate_ema(df, self.ema_period)
+
+            # Get current values
+            current_rsi = rsi.iloc[-1]
+            prev_rsi = rsi.iloc[-2]
+            current_price = df["close"].iloc[-1]
+            ema_change = ema.diff().iloc[-1]
+
+            # Check for momentum shifts
+            positive_momentum = (
+                prev_rsi < self.positive_momentum
+                and current_rsi > self.positive_momentum
+                and current_rsi > self.negative_momentum
+                and ema_change > 0
+            )
+
+            negative_momentum = current_rsi < self.negative_momentum and ema_change < 0
+
+            # Update position states
+            if positive_momentum:
+                self.is_long = True
+                self.is_short = False
+            elif negative_momentum:
+                self.is_long = False
+                self.is_short = True
+
+            # Generate trading signals
             signal = "NEUTRAL"
             strength = 0.0
-            
-            # RSI ve EMA'ya göre sinyal belirle
-            if rsi < self.negative_momentum and current_price < ema:
+
+            if self.is_long and not self.is_short:
                 signal = "LONG"
-                strength = (self.negative_momentum - rsi) / self.negative_momentum
-            elif rsi > self.positive_momentum and current_price > ema:
+                strength = min((current_rsi - self.positive_momentum) / 10, 1.0)
+            elif self.is_short and not self.is_long:
                 signal = "SHORT"
-                strength = (rsi - self.positive_momentum) / (100 - self.positive_momentum)
-            
-            # Son sinyali güncelle
+                strength = min((self.negative_momentum - current_rsi) / 10, 1.0)
+
+            # Store the signal
             self.last_signal = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "signal": signal,
                 "strength": strength,
                 "current_price": current_price,
-                "rsi": rsi,
-                "ema": ema
+                "rsi": current_rsi,
+                "ema": ema.iloc[-1],
+                "is_long": self.is_long,
+                "is_short": self.is_short,
+                "positive_momentum": positive_momentum,
+                "negative_momentum": negative_momentum,
             }
-            
+
             return self.last_signal
-            
+
         except Exception as e:
-            logger.error(f"Sinyal üretilirken hata oluştu: {str(e)}")
+            logger.error(f"Error generating RSI Middle Band signal: {str(e)}")
             raise
-    
+
     def get_last_signal(self) -> Dict[str, Any]:
         """
-        Son üretilen sinyali döndürür.
-        
+        Get the last generated signal.
+
         Returns:
-            Dict[str, Any]: Son sinyal bilgilerini içeren sözlük
+            Dict containing the last signal information
         """
-        return self.last_signal 
+        return self.last_signal

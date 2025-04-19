@@ -1,3 +1,3 @@
 """
-Trading Bot main package.
-""" 
+Trading bot package.
+"""

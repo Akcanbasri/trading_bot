@@ -1,23 +1,22 @@
 """
-MACD (Moving Average Convergence Divergence) stratejisi modülü.
-MACD indikatörünü kullanarak alım/satım sinyalleri üretir.
+MACD Strategy implementation.
+This strategy uses Moving Average Convergence Divergence to identify trend changes and momentum.
 """
-import logging
-import pandas as pd
-import numpy as np
-from typing import Dict, Any, List
-from ..strategies.base_strategy import BaseStrategy
-from ..data.market_data import MarketDataCollector
-from ..utils.exceptions import InsufficientDataError
 
-logger = logging.getLogger(__name__)
+import numpy as np
+import pandas as pd
+from typing import Dict, Any, List, Tuple
+from loguru import logger
+from src.strategies.base_strategy import BaseStrategy
+from src.data.market_data import MarketDataCollector
+
 
 class MACDStrategy(BaseStrategy):
     """
-    MACD stratejisi sınıfı.
-    MACD indikatörünü kullanarak alım/satım sinyalleri üretir.
+    MACD Strategy implementation.
+    Uses Moving Average Convergence Divergence to identify trend changes and momentum.
     """
-    
+
     def __init__(
         self,
         market_data: MarketDataCollector,
@@ -25,142 +24,148 @@ class MACDStrategy(BaseStrategy):
         slow_period: int = 26,
         signal_period: int = 9,
         histogram_threshold: float = 0.0,
-        min_bars: int = 30
+        ma_type: str = "EMA",
     ):
         """
-        MACD stratejisi sınıfının başlatıcı metodu.
-        
+        Initialize the MACD strategy.
+
         Args:
-            market_data: Market veri toplayıcı nesnesi
-            fast_period: Hızlı EMA periyodu (varsayılan: 12)
-            slow_period: Yavaş EMA periyodu (varsayılan: 26)
-            signal_period: Sinyal çizgisi periyodu (varsayılan: 9)
-            histogram_threshold: Histogram eşik değeri (varsayılan: 0.0)
-            min_bars: Minimum gerekli bar sayısı (varsayılan: 30)
+            market_data: MarketDataCollector instance
+            fast_period: Fast EMA period
+            slow_period: Slow EMA period
+            signal_period: Signal line period
+            histogram_threshold: Threshold for histogram crossover
+            ma_type: Moving average type ("EMA" or "SMA")
         """
-        super().__init__(name="macd_strategy", market_data=market_data)
-        
-        if fast_period <= 0:
-            raise ValueError("Hızlı EMA periyodu pozitif olmalıdır")
-        if slow_period <= 0:
-            raise ValueError("Yavaş EMA periyodu pozitif olmalıdır")
-        if signal_period <= 0:
-            raise ValueError("Sinyal çizgisi periyodu pozitif olmalıdır")
-        if fast_period >= slow_period:
-            raise ValueError("Hızlı EMA periyodu yavaş EMA periyodundan küçük olmalıdır")
-        
+        super().__init__("MACD Strategy", market_data)
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.signal_period = signal_period
         self.histogram_threshold = histogram_threshold
-        self.min_bars = min_bars
-        
-        logger.info(
-            f"MACDStrategy başlatıldı: fast_period={fast_period}, "
-            f"slow_period={slow_period}, signal_period={signal_period}, "
-            f"histogram_threshold={histogram_threshold}, min_bars={min_bars}"
-        )
-    
-    def calculate_macd(self, prices: List[float]) -> Dict[str, float]:
+        self.ma_type = ma_type.upper()
+        self.last_signal = None
+        self.last_histogram = None
+
+    def calculate_ma(self, data: pd.Series, period: int) -> pd.Series:
         """
-        Verilen fiyat listesi için MACD değerlerini hesaplar.
-        
+        Calculate moving average based on specified type.
+
         Args:
-            prices: Kapanış fiyatları listesi
-            
+            data: Price series
+            period: MA period
+
         Returns:
-            Dict[str, float]: MACD değerlerini içeren sözlük
+            Series containing MA values
         """
-        if len(prices) < self.slow_period + self.signal_period:
-            raise InsufficientDataError(
-                f"MACD hesaplaması için en az {self.slow_period + self.signal_period} "
-                f"veri noktası gerekli, ancak sadece {len(prices)} veri noktası mevcut"
-            )
-        
-        # Fiyatları pandas Series'e dönüştür
-        price_series = pd.Series(prices)
-        
-        # EMA'ları hesapla
-        fast_ema = price_series.ewm(span=self.fast_period, adjust=False).mean()
-        slow_ema = price_series.ewm(span=self.slow_period, adjust=False).mean()
-        
-        # MACD çizgisini hesapla
-        macd_line = fast_ema - slow_ema
-        
-        # Sinyal çizgisini hesapla
-        signal_line = macd_line.ewm(span=self.signal_period, adjust=False).mean()
-        
-        # Histogramı hesapla
+        if self.ma_type == "EMA":
+            return data.ewm(span=period, adjust=False).mean()
+        else:  # SMA
+            return data.rolling(window=period).mean()
+
+    def calculate_macd(
+        self, df: pd.DataFrame
+    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """
+        Calculate MACD indicator components.
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            Tuple containing:
+            - MACD line
+            - Signal line
+            - Histogram
+        """
+        close = df["close"]
+
+        # Calculate fast and slow MAs
+        fast_ma = self.calculate_ma(close, self.fast_period)
+        slow_ma = self.calculate_ma(close, self.slow_period)
+
+        # Calculate MACD line
+        macd_line = fast_ma - slow_ma
+
+        # Calculate signal line
+        signal_line = self.calculate_ma(macd_line, self.signal_period)
+
+        # Calculate histogram
         histogram = macd_line - signal_line
-        
-        return {
-            "macd_line": macd_line.iloc[-1],
-            "signal_line": signal_line.iloc[-1],
-            "histogram": histogram.iloc[-1]
-        }
-    
+
+        return macd_line, signal_line, histogram
+
     def generate_signal(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
-        Verilen sembol ve zaman dilimi için MACD bazlı trading sinyali üretir.
-        
+        Generate trading signals based on MACD strategy.
+
         Args:
-            symbol: Trading sembolü (örn. "DOGEUSDT")
-            timeframe: Zaman dilimi (örn. "15m", "1h", "4h", "1d")
-            
+            symbol: Trading pair symbol
+            timeframe: Timeframe for analysis
+
         Returns:
-            Dict[str, Any]: Sinyal bilgilerini içeren sözlük
-            
-        Raises:
-            InsufficientDataError: Yeterli veri yoksa
+            Dictionary containing signal information
         """
         try:
-            # Tarihsel verileri al - use fresh data
-            df = self.market_data.get_historical_data(symbol, timeframe, use_cache=False)
-            
-            if df.empty or len(df) < self.min_bars:
-                raise InsufficientDataError(
-                    f"{symbol} için yeterli veri yok. En az {self.min_bars} bar gerekli."
-                )
-            
-            # Kapanış fiyatlarını al
-            prices = df["close"].tolist()
-            
-            # MACD değerlerini hesapla
-            macd_values = self.calculate_macd(prices)
-            
-            # Sinyal gücünü hesapla
-            signal_strength = abs(macd_values["histogram"]) / abs(macd_values["macd_line"]) if macd_values["macd_line"] != 0 else 0.0
-            
-            # Sinyal yönünü belirle
+            # Get historical data
+            df = self.market_data.get_historical_data(symbol, timeframe)
+            if df.empty:
+                raise ValueError(f"No data available for {symbol} {timeframe}")
+
+            # Calculate MACD components
+            macd_line, signal_line, histogram = self.calculate_macd(df)
+
+            # Get current values
+            current_price = df["close"].iloc[-1]
+            current_macd = macd_line.iloc[-1]
+            current_signal = signal_line.iloc[-1]
+            current_hist = histogram.iloc[-1]
+
+            # Get previous values
+            prev_hist = histogram.iloc[-2] if len(histogram) > 1 else 0
+
+            # Detect crossovers
+            rising_to_falling = prev_hist >= 0 and current_hist < 0
+            falling_to_rising = prev_hist <= 0 and current_hist > 0
+
+            # Generate trading signals
             signal = "NEUTRAL"
-            if macd_values["histogram"] > self.histogram_threshold and macd_values["macd_line"] > macd_values["signal_line"]:
+            strength = 0.0
+
+            if falling_to_rising and current_hist > self.histogram_threshold:
                 signal = "LONG"
-            elif macd_values["histogram"] < -self.histogram_threshold and macd_values["macd_line"] < macd_values["signal_line"]:
+                strength = min(abs(current_hist) / abs(current_macd), 1.0)
+            elif rising_to_falling and current_hist < -self.histogram_threshold:
                 signal = "SHORT"
-            
-            # Son sinyali güncelle
+                strength = min(abs(current_hist) / abs(current_macd), 1.0)
+
+            # Store the signal
             self.last_signal = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "signal": signal,
-                "strength": signal_strength,
-                "macd_line": macd_values["macd_line"],
-                "signal_line": macd_values["signal_line"],
-                "histogram": macd_values["histogram"],
-                "current_price": prices[-1]
+                "strength": strength,
+                "current_price": current_price,
+                "macd": current_macd,
+                "signal_line": current_signal,
+                "histogram": current_hist,
+                "rising_to_falling": rising_to_falling,
+                "falling_to_rising": falling_to_rising,
             }
-            
+
+            # Update last histogram value
+            self.last_histogram = current_hist
+
             return self.last_signal
-            
+
         except Exception as e:
-            logger.error(f"Sinyal üretilirken hata oluştu: {str(e)}")
+            logger.error(f"Error generating MACD signal: {str(e)}")
             raise
-    
+
     def get_last_signal(self) -> Dict[str, Any]:
         """
-        Son üretilen sinyali döndürür.
-        
+        Get the last generated signal.
+
         Returns:
-            Dict[str, Any]: Son sinyal bilgilerini içeren sözlük
+            Dict containing the last signal information
         """
-        return self.last_signal 
+        return self.last_signal
