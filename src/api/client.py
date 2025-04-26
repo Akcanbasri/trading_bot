@@ -1,548 +1,226 @@
 """
-Binance API için client wrapper.
+Binance API istemcisi.
+
+Bu modül, Binance API ile etkileşim kurmak için gerekli fonksiyonları sağlar.
 """
 
-from typing import Dict, List, Optional, Any, Union
+import os
+import time
+import logging
+from typing import Dict, Any, Optional, List, Tuple
+from decimal import Decimal, ROUND_DOWN
+from loguru import logger
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from loguru import logger
-import pandas as pd
-import time
-from datetime import datetime, timedelta
-import requests
-import hmac
-import hashlib
+from src.utils.log_throttler import LogThrottler
 
 
 class BinanceClient:
-    """Binance API istemcisi wrapper sınıfı."""
+    """
+    Binance API istemcisi sınıfı.
 
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
+    Binance API ile etkileşim kurmak için gerekli metodları sağlar.
+    """
+
+    def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None):
         """
-        Binance API istemcisi başlatma.
+        Binance API istemcisini başlatır.
 
         Args:
-            api_key: Binance API anahtarı
-            api_secret: Binance API gizli anahtarı
-            testnet: Testnet modunu kullan (varsayılan: True)
+            api_key: API anahtarı (opsiyonel)
+            api_secret: API gizli anahtarı (opsiyonel)
         """
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.testnet = testnet
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Content-Type": "application/json;charset=utf-8",
-                "X-MBX-APIKEY": self.api_key,
-            }
-        )
-        self.time_offset = 0
-        self._init_time_offset()
+        self.api_key = api_key or os.getenv("BINANCE_API_KEY")
+        self.api_secret = api_secret or os.getenv("BINANCE_API_SECRET")
 
-        # Binance client'ı başlat
-        self.client = Client(api_key=api_key, api_secret=api_secret, testnet=testnet)
+        if not self.api_key or not self.api_secret:
+            raise ValueError("API anahtarları bulunamadı")
 
-        logger.info(f"Binance client başlatıldı. Testnet: {testnet}")
+        self.client = Client(self.api_key, self.api_secret)
+        self.server_time_offset = self._calculate_server_time_offset()
 
-    def _init_time_offset(self):
-        """Initialize time offset between local and server time"""
+        # Initialize log throttler with default 60-second interval
+        self.log_throttler = LogThrottler(default_interval=60.0)
+
+        # Set custom intervals for specific log types
+        self.log_throttler.set_interval(
+            "price_check", 30.0
+        )  # Price checks every 30 seconds
+        self.log_throttler.set_interval(
+            "position_check", 60.0
+        )  # Position checks every 60 seconds
+        self.log_throttler.set_interval(
+            "balance_check", 300.0
+        )  # Balance checks every 5 minutes
+
+        logger.info("Binance API istemcisi başlatıldı")
+
+    def _calculate_server_time_offset(self) -> int:
+        """
+        Sunucu zamanı farkını hesaplar.
+
+        Returns:
+            int: Sunucu zamanı farkı (milisaniye)
+        """
         try:
-            for i in range(3):  # Try 3 times
-                server_time = self.get_server_time()
-                local_time = int(time.time() * 1000)
-                self.time_offset = server_time - local_time
-                # If offset is small enough, we're good
-                if abs(self.time_offset) < 1000:
-                    break
-                time.sleep(0.1)
+            server_time = self.client.get_server_time()
+            local_time = int(time.time() * 1000)
+            offset = server_time["serverTime"] - local_time
+            logger.debug(f"Sunucu zamanı farkı: {offset} ms")
+            return offset
         except Exception as e:
-            logger.error(f"Error initializing time offset: {e}")
-            self.time_offset = 0
+            logger.error(f"Sunucu zamanı farkı hesaplanırken hata oluştu: {e}")
+            return 0
 
-    def get_server_time(self):
-        """Get Binance server time in milliseconds"""
-        try:
-            response = self.session.get("https://fapi.binance.com/fapi/v1/time")
-            response.raise_for_status()
-            return response.json()["serverTime"]
-        except Exception as e:
-            logger.error(f"Error getting server time: {e}")
-            return int(time.time() * 1000)  # Fallback to local time
-
-    def _get_timestamp(self) -> int:
+    def get_server_time(self, is_futures: bool = False) -> int:
         """
-        Sunucu zamanı ile senkronize timestamp döndürür.
-
-        Returns:
-            int: Timestamp (milisaniye)
-        """
-        return int(time.time() * 1000) + self.time_offset
-
-    def _get_futures_timestamp(self) -> int:
-        """
-        Futures API için senkronize timestamp döndürür.
-
-        Returns:
-            int: Timestamp (milisaniye)
-        """
-        try:
-            # Get current time and apply the offset we calculated during initialization
-            return int(time.time() * 1000) + self.time_offset
-        except Exception as e:
-            logger.error(f"Error getting futures timestamp: {e}")
-            return int(time.time() * 1000)  # Fallback to local time
-
-    def get_exchange_info(self) -> Dict[str, Any]:
-        """
-        Borsa bilgisini alır.
-
-        Returns:
-            Dict: Borsa bilgisi
-        """
-        try:
-            return self.client.get_exchange_info()
-        except BinanceAPIException as e:
-            logger.error(f"Borsa bilgisi alınamadı: {e}")
-            raise
-
-    def get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-        """
-        Sembol bilgisini alır.
+        Binance sunucu zamanını döndürür.
 
         Args:
-            symbol: İşlem sembolü (örn. "BTCUSDT")
+            is_futures: Futures API kullanılıyor mu (varsayılan: False)
 
         Returns:
-            Dict: Sembol bilgisi
+            int: Sunucu zamanı (milisaniye)
         """
         try:
-            return self.client.get_symbol_info(symbol)
-        except BinanceAPIException as e:
-            logger.error(f"{symbol} sembol bilgisi alınamadı: {e}")
-            raise
+            server_time = self.client.get_server_time()
+            local_time = int(time.time() * 1000)
+            offset = server_time["serverTime"] - local_time
 
-    def get_historical_klines(
-        self,
-        symbol: str,
-        interval: str,
-        start_str: Optional[str] = None,
-        end_str: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[List[Any]]:
-        """
-        Geçmiş kline/candlestick verilerini alır.
-
-        Args:
-            symbol: İşlem sembolü (örn. "BTCUSDT")
-            interval: Zaman aralığı (örn. "1d", "4h", "1h", "15m", "5m", "1m")
-            start_str: Başlangıç zamanı (örn. "1 Jan, 2020")
-            end_str: Bitiş zamanı (örn. "1 Jan, 2021")
-            limit: Sonuç sayısı limiti
-
-        Returns:
-            List: Kline verileri listesi
-        """
-        try:
-            return self.client.get_historical_klines(
-                symbol=symbol,
-                interval=interval,
-                start_str=start_str,
-                end_str=end_str,
-                limit=limit,
-            )
-        except BinanceAPIException as e:
-            logger.error(f"{symbol} için kline verileri alınamadı: {e}")
-            raise
-
-    def get_account(self) -> Dict[str, Any]:
-        """
-        Hesap bilgilerini alır.
-
-        Returns:
-            Dict: Hesap bilgileri
-        """
-        try:
-            return self.client.get_account()
-        except BinanceAPIException as e:
-            logger.error(f"Hesap bilgisi alınamadı: {e}")
-            raise
-
-    def get_asset_balance(self, asset: str) -> Dict[str, str]:
-        """
-        Belirli bir varlık için bakiye bilgisini alır.
-
-        Args:
-            asset: Varlık sembolü (örn. "BTC", "USDT")
-
-        Returns:
-            Dict: Varlık bakiye bilgisi
-        """
-        try:
-            return self.client.get_asset_balance(asset=asset)
-        except BinanceAPIException as e:
-            logger.error(f"{asset} için bakiye bilgisi alınamadı: {e}")
-            raise
-
-    def create_order(
-        self,
-        symbol: str,
-        side: str,
-        order_type: str,
-        quantity: float,
-        price: float = None,
-        time_in_force: str = "GTC",
-        reduce_only: bool = False,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Futures emir oluşturur.
-
-        Args:
-            symbol: İşlem sembolü
-            side: İşlem yönü (BUY/SELL)
-            order_type: Emir tipi (LIMIT/MARKET/STOP/TAKE_PROFIT vs.)
-            quantity: İşlem miktarı
-            price: Emir fiyatı (LIMIT emirleri için)
-            time_in_force: Emir geçerlilik süresi (GTC/IOC/FOK)
-            reduce_only: Sadece pozisyon kapatma
-            **kwargs: Diğer parametreler
-
-        Returns:
-            Dict: API yanıtı
-        """
-        try:
-            # Round quantity to required precision
-            quantity = self.round_quantity_to_precision(symbol, quantity)
-
-            params = {
-                "symbol": symbol,
-                "side": side,
-                "type": order_type,
-                "quantity": quantity,
-                "reduceOnly": reduce_only,
-            }
-
-            if order_type == "LIMIT":
-                if price is None:
-                    raise ValueError("Price is required for limit orders")
-                params["price"] = price
-                params["timeInForce"] = time_in_force
-
-            params.update(kwargs)
-
-            self.logger.info(f"Creating {order_type} order: {params}")
-            return self.client.futures_create_order(**params)
-
-        except Exception as e:
-            self.logger.error(f"Error creating order: {str(e)}")
-            raise
-
-    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Açık emirleri alır.
-
-        Args:
-            symbol: İşlem sembolü (opsiyonel)
-
-        Returns:
-            List: Açık emirler listesi
-        """
-        try:
-            return self.client.get_open_orders(symbol=symbol)
-        except BinanceAPIException as e:
-            logger.error(f"Açık emirler alınamadı: {e}")
-            raise
-
-    def cancel_order(
-        self,
-        symbol: str,
-        order_id: Optional[int] = None,
-        orig_client_order_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Bir emri iptal eder.
-
-        Args:
-            symbol: İşlem sembolü
-            order_id: Emir ID'si (opsiyonel)
-            orig_client_order_id: Orijinal client emir ID'si (opsiyonel)
-
-        Returns:
-            Dict: İptal edilen emir bilgisi
-        """
-        try:
-            return self.client.cancel_order(
-                symbol=symbol, orderId=order_id, origClientOrderId=orig_client_order_id
-            )
-        except BinanceAPIException as e:
-            logger.error(f"Emir iptal edilemedi: {e}")
-            raise
-
-    def get_futures_account_balance(self) -> Dict[str, float]:
-        """
-        Futures hesap bakiyesini alır.
-
-        Returns:
-            Dict[str, float]: Bakiye bilgileri
-        """
-        try:
-            account = self.client.futures_account_balance()
-            total_balance = float(account[0]["balance"])
-            available_balance = float(account[0]["withdrawAvailable"])
-
-            return {"total": total_balance, "available": available_balance}
-        except BinanceAPIException as e:
-            logger.error(f"Futures bakiye bilgisi alınamadı: {e}")
-            raise
-
-    def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """
-        Kaldıraç oranını ayarlar.
-
-        Args:
-            symbol: İşlem sembolü
-            leverage: Kaldıraç oranı
-
-        Returns:
-            bool: İşlem başarılı ise True
-        """
-        try:
-            self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
-            logger.info(f"{symbol} için kaldıraç {leverage}x olarak ayarlandı")
-            return True
-        except BinanceAPIException as e:
-            logger.error(f"Kaldıraç ayarlanamadı: {e}")
-            return False
-
-    def set_margin_type(self, symbol: str, margin_type: str) -> bool:
-        """
-        Marj tipini ayarlar (ISOLATED veya CROSSED).
-
-        Args:
-            symbol: İşlem sembolü
-            margin_type: Marj tipi ('ISOLATED' veya 'CROSSED')
-
-        Returns:
-            bool: İşlem başarılı ise True
-        """
-        try:
-            self.client.futures_change_margin_type(
-                symbol=symbol, marginType=margin_type
-            )
-            logger.info(f"{symbol} için marj tipi {margin_type} olarak ayarlandı")
-            return True
-        except BinanceAPIException as e:
-            logger.error(f"Marj tipi ayarlanamadı: {e}")
-            return False
-
-    def open_futures_position(
-        self,
-        symbol: str,
-        side: str,
-        quantity: float,
-        leverage: int,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """
-        Futures pozisyonu açar.
-
-        Args:
-            symbol: İşlem sembolü
-            side: İşlem yönü ('BUY' veya 'SELL')
-            quantity: İşlem miktarı
-            leverage: Kaldıraç oranı
-            stop_loss: Stop-loss fiyatı
-            take_profit: Take-profit fiyatı
-
-        Returns:
-            Dict[str, Any]: İşlem bilgileri
-        """
-        try:
-            # Kaldıracı ayarla
-            self.set_leverage(symbol, leverage)
-
-            # Ana emri gönder
-            order = self.client.futures_create_order(
-                symbol=symbol, side=side, type="MARKET", quantity=quantity
+            # Use throttled logging for server time offset
+            self.log_throttler.log(
+                "server_time",
+                f"{'Futures' if is_futures else 'Spot'} Server time offset: {offset}ms",
+                level="debug",
             )
 
-            # Stop-loss emri
-            if stop_loss:
-                sl_side = "SELL" if side == "BUY" else "BUY"
-                self.client.futures_create_order(
-                    symbol=symbol,
-                    side=sl_side,
-                    type="STOP_MARKET",
-                    stopPrice=stop_loss,
-                    closePosition=True,
+            return server_time["serverTime"]
+        except Exception as e:
+            logger.error(f"Sunucu zamanı alınırken hata oluştu: {e}")
+            return int(time.time() * 1000) + self.server_time_offset
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """
+        Mevcut fiyatı alır.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+
+        Returns:
+            Optional[float]: Mevcut fiyat veya None (hata durumunda)
+        """
+        try:
+            ticker = self.client.futures_symbol_ticker(symbol=symbol)
+            price = float(ticker["price"])
+
+            # Use throttled logging for price updates
+            self.log_throttler.log(
+                f"price_{symbol}", f"{symbol} mevcut fiyat: {price}", level="debug"
+            )
+
+            return price
+        except Exception as e:
+            logger.error(f"{symbol} için mevcut fiyat alınırken hata oluştu: {e}")
+            return None
+
+    def get_futures_quantity_precision(self, symbol: str) -> int:
+        """
+        Futures miktar hassasiyetini alır.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+
+        Returns:
+            int: Miktar hassasiyeti
+        """
+        try:
+            exchange_info = self.client.futures_exchange_info()
+            symbol_info = next(
+                (s for s in exchange_info["symbols"] if s["symbol"] == symbol), None
+            )
+            if not symbol_info:
+                raise ValueError(f"{symbol} için sembol bilgisi bulunamadı")
+
+            quantity_precision = symbol_info["quantityPrecision"]
+
+            # Use throttled logging for precision info
+            self.log_throttler.log(
+                f"precision_{symbol}",
+                f"{symbol} miktar hassasiyeti: {quantity_precision}",
+                level="debug",
+            )
+
+            return quantity_precision
+        except Exception as e:
+            logger.error(f"{symbol} için miktar hassasiyeti alınırken hata oluştu: {e}")
+            return 8  # Varsayılan hassasiyet
+
+    def calculate_min_quantity(
+        self, symbol: str, min_notional: float
+    ) -> Optional[float]:
+        """
+        Minimum miktarı hesaplar.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            min_notional: Minimum nominal değer
+
+        Returns:
+            Optional[float]: Minimum miktar veya None (hata durumunda)
+        """
+        try:
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                raise ValueError(f"{symbol} için mevcut fiyat alınamadı")
+
+            min_qty = min_notional / current_price
+            precision = self.get_futures_quantity_precision(symbol)
+            min_qty = float(
+                Decimal(str(min_qty)).quantize(
+                    Decimal("0." + "0" * precision), rounding=ROUND_DOWN
                 )
-
-            # Take-profit emri
-            if take_profit:
-                tp_side = "SELL" if side == "BUY" else "BUY"
-                self.client.futures_create_order(
-                    symbol=symbol,
-                    side=tp_side,
-                    type="TAKE_PROFIT_MARKET",
-                    stopPrice=take_profit,
-                    closePosition=True,
-                )
-
-            logger.info(
-                f"Futures pozisyonu açıldı: {symbol} {side} {quantity}@{leverage}x"
-            )
-            return order
-
-        except BinanceAPIException as e:
-            logger.error(f"Futures pozisyonu açılamadı: {e}")
-            raise
-
-    def close_futures_position(self, symbol: str) -> bool:
-        """
-        Futures pozisyonunu kapatır.
-
-        Args:
-            symbol: İşlem sembolü
-
-        Returns:
-            bool: İşlem başarılı ise True
-        """
-        try:
-            position = self.client.futures_position_information(symbol=symbol)[0]
-            if float(position["positionAmt"]) != 0:
-                side = "SELL" if float(position["positionAmt"]) > 0 else "BUY"
-                quantity = abs(float(position["positionAmt"]))
-
-                self.client.futures_create_order(
-                    symbol=symbol,
-                    side=side,
-                    type="MARKET",
-                    quantity=quantity,
-                    reduceOnly=True,
-                )
-
-                logger.info(f"Futures pozisyonu kapatıldı: {symbol}")
-                return True
-            return False
-
-        except BinanceAPIException as e:
-            logger.error(f"Futures pozisyonu kapatılamadı: {e}")
-            return False
-
-    def get_futures_position(self, symbol: str) -> Dict[str, Any]:
-        """
-        Futures pozisyon bilgilerini alır.
-
-        Args:
-            symbol: İşlem sembolü
-
-        Returns:
-            Dict[str, Any]: Pozisyon bilgileri
-        """
-        try:
-            position = self.client.futures_position_information(symbol=symbol)[0]
-            return {
-                "symbol": position["symbol"],
-                "position_amt": float(position["positionAmt"]),
-                "entry_price": float(position["entryPrice"]),
-                "unrealized_pnl": float(position["unRealizedProfit"]),
-                "leverage": int(position["leverage"]),
-                "margin_type": position["marginType"],
-            }
-        except BinanceAPIException as e:
-            logger.error(f"Futures pozisyon bilgisi alınamadı: {e}")
-            raise
-
-    def get_futures_klines(
-        self,
-        symbol: str,
-        interval: str,
-        limit: int = 100,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-    ) -> pd.DataFrame:
-        """
-        Futures kline verilerini alır.
-
-        Args:
-            symbol: İşlem sembolü
-            interval: Zaman aralığı
-            limit: Veri sayısı
-            start_time: Başlangıç zamanı
-            end_time: Bitiş zamanı
-
-        Returns:
-            pd.DataFrame: Kline verileri
-        """
-        try:
-            klines = self.client.futures_klines(
-                symbol=symbol,
-                interval=interval,
-                limit=limit,
-                startTime=start_time,
-                endTime=end_time,
             )
 
-            df = pd.DataFrame(
-                klines,
-                columns=[
-                    "timestamp",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "close_time",
-                    "quote_volume",
-                    "trades",
-                    "taker_buy_base",
-                    "taker_buy_quote",
-                    "ignore",
-                ],
+            # Use throttled logging for min quantity
+            self.log_throttler.log(
+                f"min_qty_{symbol}",
+                f"{symbol} minimum miktar: {min_qty}",
+                level="debug",
             )
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = df[col].astype(float)
-
-            return df
-
-        except BinanceAPIException as e:
-            logger.error(f"Futures kline verileri alınamadı: {e}")
-            raise
+            return min_qty
+        except Exception as e:
+            logger.error(f"{symbol} için minimum miktar hesaplanırken hata oluştu: {e}")
+            return None
 
     def futures_change_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
         """
-        Futures kaldıraç oranını değiştirir.
+        Kaldıraç oranını değiştirir.
 
         Args:
-            symbol: İşlem sembolü (örn. "BTCUSDT")
-            leverage: Kaldıraç oranı (1-125)
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            leverage: Kaldıraç oranı
 
         Returns:
-            Dict: API yanıtı
+            Dict[str, Any]: İşlem sonucu
         """
         try:
-            timestamp = self._get_timestamp()
-            params = {"symbol": symbol, "leverage": leverage, "timestamp": timestamp}
-
-            # Add signature
-            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-            signature = hmac.new(
-                self.api_secret.encode("utf-8"),
-                query_string.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-            params["signature"] = signature
-
-            response = self.session.post(
-                "https://fapi.binance.com/fapi/v1/leverage", params=params
+            result = self.client.futures_change_leverage(
+                symbol=symbol, leverage=leverage
             )
-            response.raise_for_status()
-            return response.json()
+
+            # Use throttled logging for leverage changes
+            self.log_throttler.log(
+                f"leverage_{symbol}",
+                f"{symbol} kaldıraç oranı {leverage}x olarak ayarlandı",
+                level="debug",
+            )
+
+            return result
         except Exception as e:
-            logger.error(f"Error changing leverage: {e}")
+            logger.error(
+                f"{symbol} için kaldıraç oranı değiştirilirken hata oluştu: {e}"
+            )
             raise
 
     def futures_create_order(
@@ -550,265 +228,432 @@ class BinanceClient:
         symbol: str,
         side: str,
         order_type: str,
-        quantity: Optional[float] = None,
-        price: Optional[float] = None,
-        position_side: str = "BOTH",
-        time_in_force: str = "GTC",
+        quantity: float,
         reduce_only: bool = False,
-        stop_price: Optional[float] = None,
-        close_position: bool = False,
-        activation_price: Optional[float] = None,
-        callback_rate: Optional[float] = None,
-        working_type: str = "CONTRACT_PRICE",
-        price_protect: bool = False,
-        new_client_order_id: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Futures emir oluşturur.
+        Futures emri oluşturur.
 
         Args:
-            symbol: İşlem sembolü
-            side: İşlem yönü (BUY/SELL)
-            order_type: Emir tipi (LIMIT/MARKET/STOP/TAKE_PROFIT vs.)
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            side: İşlem yönü ("BUY" veya "SELL")
+            order_type: Emir tipi ("MARKET", "LIMIT", vb.)
             quantity: İşlem miktarı
-            price: Emir fiyatı (LIMIT emirleri için)
-            position_side: Pozisyon yönü (BOTH/LONG/SHORT)
-            time_in_force: Emir geçerlilik süresi (GTC/IOC/FOK)
-            reduce_only: Sadece pozisyon kapatma
-            stop_price: Stop fiyatı (STOP/TAKE_PROFIT emirleri için)
-            close_position: Pozisyonu kapat
-            activation_price: Tetikleme fiyatı (TRAILING_STOP emirleri için)
-            callback_rate: Geri çağırma oranı (TRAILING_STOP emirleri için)
-            working_type: Çalışma tipi (CONTRACT_PRICE/MARK_PRICE)
-            price_protect: Fiyat koruması
-            new_client_order_id: Özel emir ID
+            reduce_only: Sadece pozisyon kapatma emri mi (varsayılan: False)
             **kwargs: Diğer parametreler
 
         Returns:
-            Dict: API yanıtı
+            Dict[str, Any]: Emir bilgileri
         """
         try:
-            # Get current server time
-            server_time = self.get_server_time()
-
-            # Prepare parameters
-            params = {
-                "symbol": symbol,
-                "side": side,
-                "type": order_type,
-                "quantity": quantity,
-                "timestamp": server_time,
-            }
-
-            # Add optional parameters based on order type
-            if order_type == "LIMIT":
-                params.update({"timeInForce": time_in_force, "price": price})
-            elif order_type == "MARKET":
-                # For MARKET orders, we only need symbol, side, type, and quantity
-                pass
-            elif order_type in ["STOP", "TAKE_PROFIT"]:
-                params.update(
-                    {
-                        "timeInForce": time_in_force,
-                        "price": price,
-                        "stopPrice": stop_price,
-                    }
-                )
-            elif order_type in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
-                params.update({"stopPrice": stop_price})
-            elif order_type == "TRAILING_STOP_MARKET":
-                params.update({"callbackRate": callback_rate})
-
-            # Add other optional parameters if provided
-            if position_side != "BOTH":
-                params["positionSide"] = position_side
-            if reduce_only:
-                params["reduceOnly"] = "true"
-            if close_position:
-                params["closePosition"] = "true"
-            if working_type != "CONTRACT_PRICE":
-                params["workingType"] = working_type
-            if price_protect:
-                params["priceProtect"] = "true"
-            if new_client_order_id:
-                params["newClientOrderId"] = new_client_order_id
-
-            # Remove None values
-            params = {k: v for k, v in params.items() if v is not None}
-
-            # Convert boolean values to strings
-            for key in params:
-                if isinstance(params[key], bool):
-                    params[key] = str(params[key]).lower()
-
-            # Create signature
-            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-            signature = hmac.new(
-                self.api_secret.encode("utf-8"),
-                query_string.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-            params["signature"] = signature
-
-            # Make request
-            response = self.session.post(
-                "https://fapi.binance.com/fapi/v1/order", params=params
-            )
-            response.raise_for_status()
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"Futures emri oluşturulamadı: {e}")
-            raise
-
-    def futures_get_position_information(
-        self, symbol: Optional[str] = None
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-        """
-        Futures pozisyon bilgilerini getirir.
-
-        Args:
-            symbol: İşlem sembolü (opsiyonel)
-
-        Returns:
-            Union[Dict, List[Dict]]: API yanıtı
-        """
-        try:
-            params = {"timestamp": self._get_timestamp()}
-            if symbol:
-                params["symbol"] = symbol
-            return self.client.futures_position_information(**params)
-        except BinanceAPIException as e:
-            logger.error(f"Pozisyon bilgileri alınamadı: {e}")
-            raise
-
-    def futures_get_account_balance(self) -> List[Dict[str, Any]]:
-        """
-        Futures hesap bakiyelerini getirir.
-
-        Returns:
-            List[Dict]: API yanıtı
-        """
-        try:
-            params = {"timestamp": self._get_timestamp()}
-            return self.client.futures_account_balance(**params)
-        except BinanceAPIException as e:
-            logger.error(f"Futures bakiyeleri alınamadı: {e}")
-            raise
-
-    def futures_get_open_orders(
-        self, symbol: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Açık futures emirlerini getirir.
-
-        Args:
-            symbol: İşlem sembolü (opsiyonel)
-
-        Returns:
-            List[Dict]: API yanıtı
-        """
-        try:
-            params = {"timestamp": self._get_timestamp()}
-            if symbol:
-                params["symbol"] = symbol
-            return self.client.futures_get_open_orders(**params)
-        except BinanceAPIException as e:
-            logger.error(f"Açık futures emirleri alınamadı: {e}")
-            raise
-
-    def close(self):
-        """
-        Kaynakları temizler ve bağlantıyı kapatır.
-        """
-        try:
-            self.client.close_connection()
-            logger.info("Binance client bağlantısı kapatıldı")
-        except Exception as e:
-            logger.error(f"Bağlantı kapatılırken hata oluştu: {e}")
-
-    def get_futures_quantity_precision(self, symbol: str) -> int:
-        """Get the quantity precision for a futures symbol.
-
-        Args:
-            symbol: The trading pair symbol (e.g. 'DOGEUSDT')
-
-        Returns:
-            int: The quantity precision (number of decimal places)
-        """
-        try:
-            exchange_info = self.client.futures_exchange_info()
-            for s in exchange_info["symbols"]:
-                if s["symbol"] == symbol:
-                    return int(s["quantityPrecision"])
-            raise ValueError(f"Symbol {symbol} not found in futures exchange info")
-        except Exception as e:
-            logger.error(f"Error getting quantity precision for {symbol}: {str(e)}")
-            raise
-
-    def round_quantity_to_precision(self, symbol: str, quantity: float) -> float:
-        """Round a quantity to the symbol's precision requirements.
-
-        Args:
-            symbol: The trading pair symbol (e.g. 'DOGEUSDT')
-            quantity: The quantity to round
-
-        Returns:
-            float: The rounded quantity
-        """
-        precision = self.get_futures_quantity_precision(symbol)
-        return float(round(quantity, precision))
-
-    def create_order(
-        self,
-        symbol: str,
-        side: str,
-        order_type: str,
-        quantity: float,
-        price: float = None,
-        time_in_force: str = "GTC",
-        reduce_only: bool = False,
-        **kwargs,
-    ) -> dict:
-        """Create a futures order.
-
-        Args:
-            symbol: The trading pair symbol (e.g. 'DOGEUSDT')
-            side: Order side ('BUY' or 'SELL')
-            order_type: Order type ('LIMIT', 'MARKET', etc.)
-            quantity: Order quantity
-            price: Order price (required for limit orders)
-            time_in_force: Time in force ('GTC', 'IOC', 'FOK')
-            reduce_only: Whether this order is to reduce position only
-            **kwargs: Additional parameters to pass to the API
-
-        Returns:
-            dict: Order response from the API
-        """
-        try:
-            # Round quantity to required precision
-            quantity = self.round_quantity_to_precision(symbol, quantity)
-
             params = {
                 "symbol": symbol,
                 "side": side,
                 "type": order_type,
                 "quantity": quantity,
                 "reduceOnly": reduce_only,
+                **kwargs,
             }
 
-            if order_type == "LIMIT":
-                if price is None:
-                    raise ValueError("Price is required for limit orders")
-                params["price"] = price
-                params["timeInForce"] = time_in_force
+            # Always log order creation (not throttled)
+            logger.debug(f"Futures emri oluşturuluyor: {params}")
 
-            params.update(kwargs)
+            order = self.client.futures_create_order(**params)
 
-            self.logger.info(f"Creating {order_type} order: {params}")
-            return self.client.futures_create_order(**params)
+            # Always log successful order creation (not throttled)
+            logger.info(f"Futures emri başarıyla oluşturuldu: {order}")
 
+            return order
+        except BinanceAPIException as e:
+            logger.error(f"Binance API hatası: {e}")
+            raise
         except Exception as e:
-            self.logger.error(f"Error creating order: {str(e)}")
+            logger.error(f"Futures emri oluşturulurken hata oluştu: {e}")
+            raise
+
+    def get_futures_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Futures pozisyon bilgilerini alır.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+
+        Returns:
+            Optional[Dict[str, Any]]: Pozisyon bilgileri veya None (hata durumunda)
+        """
+        try:
+            positions = self.client.futures_position_information(symbol=symbol)
+            if not positions:
+                # Use throttled logging for position checks
+                self.log_throttler.log(
+                    f"position_{symbol}",
+                    f"{symbol} için pozisyon bilgisi bulunamadı",
+                    level="info",
+                )
+                return None
+
+            position = positions[0]
+
+            # Use throttled logging for position details
+            self.log_throttler.log(
+                f"position_{symbol}",
+                f"{symbol} pozisyon bilgileri: {position}",
+                level="debug",
+            )
+
+            return position
+        except Exception as e:
+            logger.error(f"{symbol} için pozisyon bilgileri alınırken hata oluştu: {e}")
+            return None
+
+    def get_futures_balance(self) -> Dict[str, float]:
+        """
+        Futures hesap bakiyesini döndürür.
+
+        Returns:
+            Dict[str, float]: Bakiye bilgileri
+        """
+        try:
+            account = self.client.futures_account_balance()
+            balances = {}
+            for balance in account:
+                if float(balance["balance"]) > 0:
+                    balances[balance["asset"]] = float(balance["balance"])
+
+            # Use throttled logging for balance checks
+            self.log_throttler.log(
+                "balance", f"Futures hesap bakiyesi: {balances}", level="debug"
+            )
+
+            return balances
+        except Exception as e:
+            logger.error(f"Bakiye bilgileri alınırken hata oluştu: {e}")
+            return {}
+
+    def calculate_position_size(
+        self, symbol: str, risk_amount: float, stop_loss_percent: float, leverage: int
+    ) -> Optional[float]:
+        """
+        Risk bazlı pozisyon büyüklüğünü hesaplar.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            risk_amount: Risk edilecek miktar (USDT)
+            stop_loss_percent: Stop Loss yüzdesi (örn. 2.0 = %2)
+            leverage: Kaldıraç oranı
+
+        Returns:
+            Optional[float]: Pozisyon büyüklüğü veya None (hata durumunda)
+        """
+        try:
+            # Mevcut fiyatı al
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                raise ValueError(f"{symbol} için mevcut fiyat alınamadı")
+
+            # Stop Loss fiyatını hesapla
+            stop_loss_price = current_price * (stop_loss_percent / 100)
+
+            # Risk bazlı pozisyon büyüklüğünü hesapla
+            position_size = (risk_amount * leverage) / stop_loss_price
+
+            # Miktar hassasiyetine göre yuvarla
+            precision = self.get_futures_quantity_precision(symbol)
+            position_size = float(
+                Decimal(str(position_size)).quantize(
+                    Decimal("0." + "0" * precision), rounding=ROUND_DOWN
+                )
+            )
+
+            # Use throttled logging for position size calculations
+            self.log_throttler.log(
+                f"position_size_{symbol}",
+                f"{symbol} için risk bazlı pozisyon büyüklüğü hesaplandı: {position_size} "
+                f"(risk: {risk_amount} USDT, kaldıraç: {leverage}x, SL: {stop_loss_percent}%)",
+                level="debug",
+            )
+
+            return position_size
+        except Exception as e:
+            logger.error(f"Pozisyon büyüklüğü hesaplanırken hata oluştu: {e}")
+            return None
+
+    def get_futures_position_risk(
+        self, symbol: str, position_size: float, entry_price: float, leverage: int
+    ) -> Dict[str, float]:
+        """
+        Pozisyon risk metriklerini hesaplar.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            position_size: Pozisyon büyüklüğü
+            entry_price: Giriş fiyatı
+            leverage: Kaldıraç oranı
+
+        Returns:
+            Dict[str, float]: Risk metrikleri
+        """
+        try:
+            # Pozisyon değerini hesapla
+            position_value = position_size * entry_price
+
+            # Kullanılan marjini hesapla
+            used_margin = position_value / leverage
+
+            # Maksimum kayıp miktarını hesapla
+            max_loss = used_margin
+
+            # Risk/Ödül oranını hesapla (varsayılan olarak 1:2)
+            risk_reward_ratio = 2.0
+
+            # Beklenen kâr miktarını hesapla
+            expected_profit = max_loss * risk_reward_ratio
+
+            risk_metrics = {
+                "position_value": position_value,
+                "used_margin": used_margin,
+                "max_loss": max_loss,
+                "expected_profit": expected_profit,
+                "risk_reward_ratio": risk_reward_ratio,
+            }
+
+            # Use throttled logging for risk metrics
+            self.log_throttler.log(
+                f"risk_metrics_{symbol}",
+                f"{symbol} için risk metrikleri hesaplandı: {risk_metrics}",
+                level="debug",
+            )
+
+            return risk_metrics
+        except Exception as e:
+            logger.error(f"Risk metrikleri hesaplanırken hata oluştu: {e}")
+            return {}
+
+    def close(self) -> None:
+        """
+        API bağlantısını kapatır.
+        """
+        try:
+            self.client.close_connection()
+            logger.info("API bağlantısı kapatıldı")
+        except Exception as e:
+            logger.error(f"API bağlantısı kapatılırken hata oluştu: {e}")
+
+    def create_stop_loss_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Stop Loss emri oluşturur.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            side: İşlem yönü ("BUY" veya "SELL")
+            quantity: İşlem miktarı
+            stop_price: Stop fiyatı
+            reduce_only: Sadece pozisyon kapatma emri mi (varsayılan: True)
+
+        Returns:
+            Dict[str, Any]: Emir bilgileri
+        """
+        try:
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "STOP_MARKET",
+                "quantity": quantity,
+                "stopPrice": stop_price,
+                "reduceOnly": reduce_only,
+            }
+
+            # Always log order creation (not throttled)
+            logger.debug(f"Stop Loss emri oluşturuluyor: {params}")
+
+            order = self.client.futures_create_order(**params)
+
+            # Always log successful order creation (not throttled)
+            logger.info(f"Stop Loss emri başarıyla oluşturuldu: {order}")
+
+            return order
+        except BinanceAPIException as e:
+            logger.error(f"Binance API hatası: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Stop Loss emri oluşturulurken hata oluştu: {e}")
+            raise
+
+    def create_take_profit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        take_profit_price: float,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Take Profit emri oluşturur.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            side: İşlem yönü ("BUY" veya "SELL")
+            quantity: İşlem miktarı
+            take_profit_price: Take Profit fiyatı
+            reduce_only: Sadece pozisyon kapatma emri mi (varsayılan: True)
+
+        Returns:
+            Dict[str, Any]: Emir bilgileri
+        """
+        try:
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "TAKE_PROFIT_MARKET",
+                "quantity": quantity,
+                "stopPrice": take_profit_price,
+                "reduceOnly": reduce_only,
+            }
+
+            # Always log order creation (not throttled)
+            logger.debug(f"Take Profit emri oluşturuluyor: {params}")
+
+            order = self.client.futures_create_order(**params)
+
+            # Always log successful order creation (not throttled)
+            logger.info(f"Take Profit emri başarıyla oluşturuldu: {order}")
+
+            return order
+        except BinanceAPIException as e:
+            logger.error(f"Binance API hatası: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Take Profit emri oluşturulurken hata oluştu: {e}")
+            raise
+
+    def create_oco_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        take_profit_price: float,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        OCO (One-Cancels-Other) emri oluşturur.
+        Bu emir, Stop Loss ve Take Profit emirlerini birlikte oluşturur.
+        Biri tetiklendiğinde diğeri otomatik olarak iptal edilir.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            side: İşlem yönü ("BUY" veya "SELL")
+            quantity: İşlem miktarı
+            stop_price: Stop Loss fiyatı
+            take_profit_price: Take Profit fiyatı
+            reduce_only: Sadece pozisyon kapatma emri mi (varsayılan: True)
+
+        Returns:
+            Dict[str, Any]: Emir bilgileri
+        """
+        try:
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "stopPrice": stop_price,
+                "stopLimitPrice": stop_price,  # Stop Limit fiyatı Stop fiyatı ile aynı
+                "stopLimitTimeInForce": "GTC",
+                "takeProfitPrice": take_profit_price,
+                "reduceOnly": reduce_only,
+            }
+
+            # Always log order creation (not throttled)
+            logger.debug(f"OCO emri oluşturuluyor: {params}")
+
+            order = self.client.futures_create_oco_order(**params)
+
+            # Always log successful order creation (not throttled)
+            logger.info(f"OCO emri başarıyla oluşturuldu: {order}")
+
+            return order
+        except BinanceAPIException as e:
+            logger.error(f"Binance API hatası: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"OCO emri oluşturulurken hata oluştu: {e}")
+            raise
+
+    def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
+        """
+        Belirtilen sembol için tüm emirleri iptal eder.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+
+        Returns:
+            Dict[str, Any]: İptal işlemi sonucu
+        """
+        try:
+            # Always log order cancellation (not throttled)
+            logger.debug(f"{symbol} için tüm emirler iptal ediliyor")
+
+            result = self.client.futures_cancel_all_open_orders(symbol=symbol)
+
+            # Always log successful cancellation (not throttled)
+            logger.info(f"{symbol} için tüm emirler başarıyla iptal edildi")
+
+            return result
+        except Exception as e:
+            logger.error(f"{symbol} için emirler iptal edilirken hata oluştu: {e}")
+            raise
+
+    def create_trailing_stop_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        callback_rate: float,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Trailing Stop emri oluşturur.
+
+        Args:
+            symbol: Trading sembolü (örn. "DOGEUSDT")
+            side: İşlem yönü ("BUY" veya "SELL")
+            quantity: İşlem miktarı
+            callback_rate: Geri çağırma oranı (örn. 1.0 = %1)
+            reduce_only: Sadece pozisyon kapatma emri mi (varsayılan: True)
+
+        Returns:
+            Dict[str, Any]: Emir bilgileri
+        """
+        try:
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "TRAILING_STOP_MARKET",
+                "quantity": quantity,
+                "callbackRate": callback_rate,
+                "reduceOnly": reduce_only,
+            }
+
+            # Always log order creation (not throttled)
+            logger.debug(f"Trailing Stop emri oluşturuluyor: {params}")
+
+            order = self.client.futures_create_order(**params)
+
+            # Always log successful order creation (not throttled)
+            logger.info(f"Trailing Stop emri başarıyla oluşturuldu: {order}")
+
+            return order
+        except BinanceAPIException as e:
+            logger.error(f"Binance API hatası: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Trailing Stop emri oluşturulurken hata oluştu: {e}")
             raise

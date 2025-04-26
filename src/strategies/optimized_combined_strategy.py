@@ -1,227 +1,151 @@
 """
-Optimized combined strategy module.
-Combines FiboBULL PA, RSI Middle Band, and MACD indicators for robust trading signals.
+Optimized Combined Strategy sınıfı.
+
+Bu sınıf, FiboBULL PA, RSI Middle Band ve MACD göstergelerini
+sıralı doğrulama mantığıyla birleştirir.
 """
 
-import logging
-from typing import Dict, Any, List
-import numpy as np
+from typing import Dict, Any, Optional
 import pandas as pd
 from loguru import logger
-from src.strategies.base_strategy import BaseStrategy
-from src.data.market_data import MarketDataCollector
-from src.strategies.fibobull_pa_strategy import FibobullPAStrategy
-from src.strategies.rsi_middle_band_strategy import RSIMiddleBandStrategy
-from src.strategies.macd_strategy import MACDStrategy
-from src.utils.exceptions import InsufficientDataError
 
-logger = logging.getLogger(__name__)
+from src.strategies.base_strategy import BaseStrategy
+from src.indicators.fibobuLL_pa import FiboBULLPA
+from src.indicators.rsi_middle_band import RSIMiddleBand
+from src.indicators.macd import MACD
+from src.data.market_data import MarketDataCollector
 
 
 class OptimizedCombinedStrategy(BaseStrategy):
     """
-    Optimized combined strategy that uses three main indicators:
-    1. FiboBULL PA Strategy - For price action and pattern recognition (40% weight)
-    2. RSI Middle Band Strategy - For momentum and trend confirmation (30% weight)
-    3. MACD Strategy - For trend direction and momentum (30% weight)
+    Optimize edilmiş birleşik strateji sınıfı.
 
-    The final signal is generated based on a weighted consensus of all three strategies.
+    FiboBULL PA göstergesi ana tetikleyici olarak kullanılır,
+    RSI Middle Band ve MACD göstergeleri doğrulayıcı olarak kullanılır.
     """
 
     def __init__(
         self,
-        market_data,
-        # FiboBULL PA parameters
+        data_collector: MarketDataCollector,
         fibo_left_bars: int = 8,
         fibo_right_bars: int = 8,
-        # RSI Middle Band parameters
         rsi_period: int = 14,
-        rsi_positive_momentum: float = 50.0,
-        rsi_negative_momentum: float = 45.0,
-        rsi_ema_period: int = 20,
-        # MACD parameters
+        rsi_positive_momentum: int = 50,
+        rsi_negative_momentum: int = 45,
         macd_fast_period: int = 12,
         macd_slow_period: int = 26,
         macd_signal_period: int = 9,
-        macd_histogram_threshold: float = 0.0,
     ):
         """
-        Initialize the optimized combined strategy.
+        OptimizedCombinedStrategy sınıfını başlatır.
 
         Args:
-            market_data: MarketDataCollector instance
-            fibo_left_bars: Number of bars to look back for Fibonacci patterns
-            fibo_right_bars: Number of bars to look forward for Fibonacci patterns
-            rsi_period: Period for RSI calculation
-            rsi_positive_momentum: Upper threshold for RSI
-            rsi_negative_momentum: Lower threshold for RSI
-            rsi_ema_period: Period for EMA calculation
-            macd_fast_period: Fast period for MACD
-            macd_slow_period: Slow period for MACD
-            macd_signal_period: Signal period for MACD
-            macd_histogram_threshold: Threshold for MACD histogram
+            data_collector: Market veri toplayıcı nesnesi
+            fibo_left_bars: FiboBULL PA sol bar sayısı
+            fibo_right_bars: FiboBULL PA sağ bar sayısı
+            rsi_period: RSI periyodu
+            rsi_positive_momentum: RSI pozitif momentum seviyesi
+            rsi_negative_momentum: RSI negatif momentum seviyesi
+            macd_fast_period: MACD hızlı periyot
+            macd_slow_period: MACD yavaş periyot
+            macd_signal_period: MACD sinyal periyodu
         """
-        super().__init__("Optimized Combined Strategy", market_data)
+        super().__init__()
+        self.data_collector = data_collector
 
-        # Initialize individual strategies
-        self.fibo_strategy = FibobullPAStrategy(
-            market_data=market_data,
-            left_bars=fibo_left_bars,
-            right_bars=fibo_right_bars,
+        # Alt stratejileri başlat
+        self.fibo_strategy = FiboBULLPA(
+            left_bars=fibo_left_bars, right_bars=fibo_right_bars
         )
 
-        self.rsi_strategy = RSIMiddleBandStrategy(
-            market_data=market_data,
-            period=rsi_period,
+        self.rsi_strategy = RSIMiddleBand(
+            rsi_period=rsi_period,
             positive_momentum=rsi_positive_momentum,
             negative_momentum=rsi_negative_momentum,
-            ema_period=rsi_ema_period,
         )
 
-        self.macd_strategy = MACDStrategy(
-            market_data=market_data,
+        self.macd_strategy = MACD(
             fast_period=macd_fast_period,
             slow_period=macd_slow_period,
             signal_period=macd_signal_period,
-            histogram_threshold=macd_histogram_threshold,
         )
 
-        # Store parameters
-        self.fibo_left_bars = fibo_left_bars
-        self.fibo_right_bars = fibo_right_bars
-        self.rsi_period = rsi_period
-        self.rsi_positive_momentum = rsi_positive_momentum
-        self.rsi_negative_momentum = rsi_negative_momentum
-        self.rsi_ema_period = rsi_ema_period
-        self.macd_fast_period = macd_fast_period
-        self.macd_slow_period = macd_slow_period
-        self.macd_signal_period = macd_signal_period
-        self.macd_histogram_threshold = macd_histogram_threshold
-
-        # Strategy weights
-        self.weights = {
-            "fibo": 0.4,  # 40% weight for FiboBULL PA
-            "rsi": 0.3,  # 30% weight for RSI Middle Band
-            "macd": 0.3,  # 30% weight for MACD
-        }
-
-        # Minimum signal strength threshold
-        self.min_signal_strength = 0.4
-
-        logger.info(
-            f"Initialized Optimized Combined Strategy with parameters: "
-            f"Fibo({fibo_left_bars}/{fibo_right_bars}), "
-            f"RSI({rsi_period}/{rsi_positive_momentum}/{rsi_negative_momentum}/{rsi_ema_period}), "
-            f"MACD({macd_fast_period}/{macd_slow_period}/{macd_signal_period}/{macd_histogram_threshold})"
-        )
+        logger.info("OptimizedCombinedStrategy başlatıldı")
 
     def generate_signal(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
-        Generate a trading signal by combining signals from all three strategies.
+        Sıralı doğrulama mantığıyla trading sinyali üretir.
 
         Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe for analysis
+            symbol: Trading sembolü
+            timeframe: Zaman dilimi
 
         Returns:
-            Dict containing the combined signal and individual strategy signals
-
-        Raises:
-            InsufficientDataError: If there is not enough data for analysis
+            Dict[str, Any]: Sinyal bilgilerini içeren sözlük
         """
         try:
-            # Get fresh current price
-            try:
-                current_price = self.market_data.get_current_price(symbol)
-                logger.debug(f"Fresh price for {symbol}: {current_price}")
-            except Exception as e:
-                logger.error(f"Failed to get fresh price for {symbol}: {e}")
-                raise
+            # Market verilerini al
+            df = self.data_collector.get_historical_data(symbol, timeframe)
+            if df.empty:
+                logger.warning(f"{symbol} için veri bulunamadı")
+                return {"signal": "HOLD", "current_price": None}
 
-            # Get fresh historical data
-            try:
-                df = self.market_data.get_historical_data(
-                    symbol, timeframe, use_cache=False
-                )
-                if df.empty:
-                    logger.warning(f"No data available for {symbol} {timeframe}")
-                    raise InsufficientDataError(f"No data for {symbol} {timeframe}")
-                logger.debug(
-                    f"Got fresh data for {symbol} {timeframe}, rows: {len(df)}"
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to get historical data for {symbol} {timeframe}: {e}"
-                )
-                raise
+            current_price = df["close"].iloc[-1]
 
-            # Get signals from individual strategies with fresh data
-            fibo_signal = self.fibo_strategy.generate_signal(symbol, timeframe)
-            rsi_signal = self.rsi_strategy.generate_signal(symbol, timeframe)
-            macd_signal = self.macd_strategy.generate_signal(symbol, timeframe)
+            # Alt stratejilerin sinyallerini hesapla
+            fibo_result = self.fibo_strategy.calculate(df)
+            rsi_result = self.rsi_strategy.calculate(df)
+            macd_result = self.macd_strategy.calculate(df)
 
-            # Extract signal directions
-            fibo_direction = fibo_signal["signal"]
-            rsi_direction = rsi_signal["signal"]
-            macd_direction = macd_signal["signal"]
+            # LONG sinyal kontrolü
+            long_trigger = (
+                fibo_result["long_signal"].iloc[-1] if not fibo_result.empty else False
+            )
+            rsi_momentum_ok = (
+                rsi_result["buy_signal"].iloc[-1] if not rsi_result.empty else False
+            )
+            macd_hist_ok = (
+                macd_result["hist"].iloc[-1] > 0 if not macd_result.empty else False
+            )
 
-            # Calculate signal strengths
-            fibo_strength = fibo_signal.get("strength", 0.0)
-            rsi_strength = rsi_signal.get("strength", 0.0)
-            macd_strength = macd_signal.get("strength", 0.0)
+            if long_trigger and rsi_momentum_ok and macd_hist_ok:
+                return {
+                    "signal": "LONG",
+                    "current_price": current_price,
+                    "fibo_triggered": True,
+                    "rsi_momentum_ok": True,
+                    "macd_hist_ok": True,
+                }
 
-            # Combine signals using weighted approach
-            signal_weights = {"LONG": 0, "SHORT": 0, "NEUTRAL": 0}
+            # SHORT sinyal kontrolü
+            short_trigger = (
+                fibo_result["short_signal"].iloc[-1] if not fibo_result.empty else False
+            )
+            rsi_momentum_ok = (
+                rsi_result["sell_signal"].iloc[-1] if not rsi_result.empty else False
+            )
+            macd_hist_ok = (
+                macd_result["hist"].iloc[-1] < 0 if not macd_result.empty else False
+            )
 
-            # Add weighted contributions from each strategy
-            if fibo_direction == "LONG":
-                signal_weights["LONG"] += fibo_strength * self.weights["fibo"]
-            elif fibo_direction == "SHORT":
-                signal_weights["SHORT"] += fibo_strength * self.weights["fibo"]
+            if short_trigger and rsi_momentum_ok and macd_hist_ok:
+                return {
+                    "signal": "SHORT",
+                    "current_price": current_price,
+                    "fibo_triggered": True,
+                    "rsi_momentum_ok": True,
+                    "macd_hist_ok": True,
+                }
 
-            if rsi_direction == "LONG":
-                signal_weights["LONG"] += rsi_strength * self.weights["rsi"]
-            elif rsi_direction == "SHORT":
-                signal_weights["SHORT"] += rsi_strength * self.weights["rsi"]
-
-            if macd_direction == "LONG":
-                signal_weights["LONG"] += macd_strength * self.weights["macd"]
-            elif macd_direction == "SHORT":
-                signal_weights["SHORT"] += macd_strength * self.weights["macd"]
-
-            # Determine final signal
-            max_weight = max(signal_weights.values())
-            if max_weight >= self.min_signal_strength:
-                final_signal = max(signal_weights.items(), key=lambda x: x[1])[0]
-                signal_strength = max_weight
-            else:
-                final_signal = "NEUTRAL"
-                signal_strength = 0.0
-
-            # Store the last signal
-            self.last_signal = {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "signal": final_signal,
-                "strength": signal_strength,
+            # HOLD sinyali
+            return {
+                "signal": "HOLD",
                 "current_price": current_price,
-                "fibo_signal": fibo_signal,
-                "rsi_signal": rsi_signal,
-                "macd_signal": macd_signal,
-                "weights": signal_weights,
+                "fibo_triggered": False,
+                "rsi_momentum_ok": False,
+                "macd_hist_ok": False,
             }
 
-            return self.last_signal
-
         except Exception as e:
-            logger.error(f"Error generating signal: {str(e)}")
-            raise
-
-    def get_last_signal(self) -> Dict[str, Any]:
-        """
-        Get the last generated signal.
-
-        Returns:
-            Dict[str, Any]: Last signal information
-        """
-        return self.last_signal
+            logger.error(f"Sinyal üretilirken hata oluştu: {str(e)}")
+            return {"signal": "HOLD", "current_price": None}

@@ -18,6 +18,7 @@ from src.signals.signal_processor import SignalProcessor
 from src.strategies.scaled_entry_exit_strategy import ScaledEntryExitStrategy
 from src.utils.exceptions import InsufficientDataError
 from src.telegram_notifier import TelegramNotifier
+from src.utils.log_throttler import LogThrottler
 from binance.client import Client
 
 # Load environment variables
@@ -29,8 +30,15 @@ logger = logging.getLogger(__name__)
 # Global değişkenler
 running = True
 
-# Logging configuration
-LOG_INTERVAL_SECONDS = 60  # Log routine state every 60 seconds
+# Initialize log throttler with default 60-second interval
+log_throttler = LogThrottler(default_interval=60.0)
+
+# Set custom intervals for specific log types
+log_throttler.set_interval("state_snapshot", 60.0)  # State snapshots every 60 seconds
+log_throttler.set_interval("signal_change", 30.0)  # Signal changes every 30 seconds
+log_throttler.set_interval("price_update", 30.0)  # Price updates every 30 seconds
+log_throttler.set_interval("position_update", 60.0)  # Position updates every 60 seconds
+log_throttler.set_interval("balance_update", 300.0)  # Balance updates every 5 minutes
 
 
 def test_api_connection(client: Client) -> bool:
@@ -68,38 +76,29 @@ def signal_processing_loop(
         symbol: Trading pair symbol
         timeframe: Timeframe for analysis
     """
-    # Initialize last routine log time to ensure first log happens immediately
-    last_routine_log_time = time.time() - LOG_INTERVAL_SECONDS
-
     # Track the last signal to detect changes
     last_signal_action = "HOLD"
+    last_state_snapshot = None
 
     try:
-        # Get current price
-        current_price = strategy.market_data.get_current_price(symbol)
+        while running:
+            # Get current price
+            current_price = strategy.market_data.get_current_price(symbol)
 
-        # Get indicator values
-        macd_values = strategy.get_macd_values(symbol, timeframe)
-        rsi_values = strategy.get_rsi_middle_band_values(symbol, timeframe)
-        fibo_values = strategy.get_fibobull_pa_values(symbol, timeframe)
+            # Get indicator values
+            macd_values = strategy.get_macd_values(symbol, timeframe)
+            rsi_values = strategy.get_rsi_middle_band_values(symbol, timeframe)
+            fibo_values = strategy.get_fibobull_pa_values(symbol, timeframe)
 
-        # Check if it's time for a routine log (every LOG_INTERVAL_SECONDS)
-        current_time = time.time()
-        time_for_routine_log = (
-            current_time - last_routine_log_time >= LOG_INTERVAL_SECONDS
-        )
+            # Get signal from strategy
+            signal = strategy.generate_signal(symbol, timeframe)
+            current_signal_action = signal.get("action", "HOLD")
 
-        # Get signal from strategy
-        signal = strategy.generate_signal(symbol, timeframe)
-        current_signal_action = signal.get("action", "HOLD")
+            # Check if signal has changed from HOLD to a trade action or vice versa
+            signal_changed = (
+                last_signal_action == "HOLD" and current_signal_action != "HOLD"
+            ) or (last_signal_action != "HOLD" and current_signal_action == "HOLD")
 
-        # Check if signal has changed from HOLD to a trade action or vice versa
-        signal_changed = (
-            last_signal_action == "HOLD" and current_signal_action != "HOLD"
-        ) or (last_signal_action != "HOLD" and current_signal_action == "HOLD")
-
-        # Log routine state snapshot at configured intervals
-        if time_for_routine_log:
             # Format support and resistance with proper handling of None values
             support = fibo_values.get("sup")
             resistance = fibo_values.get("res")
@@ -126,97 +125,119 @@ def signal_processing_loop(
                     f"{direction} from {entry_price:.8f} (PnL: {current_pnl:.2f}%)"
                 )
 
-            # Create concise routine log message
-            routine_log = (
-                f"State Snapshot: Price={current_price:.8f} | "
-                f"Fibo Trend={fibo_values['trend']} | "
-                f"RSI Mom={'Positive' if rsi_values['AL'] else 'Negative' if rsi_values['SAT'] else 'Neutral'} | "
-                f"MACD Hist={macd_values['hist']:.6f} | "
-                f"Decision={current_signal_action} | "
-                f"Position={position_status}"
+            # Create state snapshot
+            current_state = {
+                "price": current_price,
+                "fibo_trend": fibo_values["trend"],
+                "rsi_mom": (
+                    "Positive"
+                    if rsi_values["AL"]
+                    else "Negative" if rsi_values["SAT"] else "Neutral"
+                ),
+                "macd_hist": macd_values["hist"],
+                "decision": current_signal_action,
+                "position": position_status,
+            }
+
+            # Only log state snapshot if it has changed significantly
+            state_changed = (
+                last_state_snapshot is None
+                or abs(last_state_snapshot["price"] - current_state["price"])
+                / last_state_snapshot["price"]
+                > 0.001  # 0.1% price change
+                or last_state_snapshot["fibo_trend"] != current_state["fibo_trend"]
+                or last_state_snapshot["rsi_mom"] != current_state["rsi_mom"]
+                or last_state_snapshot["decision"] != current_state["decision"]
+                or last_state_snapshot["position"] != current_state["position"]
             )
 
-            logger.info(routine_log)
-            last_routine_log_time = current_time
-
-        # Log signal change immediately if detected
-        if signal_changed:
-            signal_change_log = (
-                f"Signal Change: {last_signal_action} -> {current_signal_action} "
-                f"(Fibo: {'Long' if fibo_values['long_signal'] else 'Short' if fibo_values['short_signal'] else 'Neutral'}, "
-                f"RSI: {'Positive' if rsi_values['AL'] else 'Negative' if rsi_values['SAT'] else 'Neutral'}, "
-                f"MACD: {'Positive' if macd_values['hist'] > 0 else 'Negative'})"
-            )
-            logger.info(signal_change_log)
-
-        # Update last signal action for next comparison
-        last_signal_action = current_signal_action
-
-        # Process signal
-        if signal:
-            # Log final decision with detailed reasoning for non-HOLD actions
-            action = signal.get("action", "UNKNOWN")
-            strength = signal.get("strength", "NONE")
-
-            # Only log detailed decision for non-HOLD actions
-            if action != "HOLD":
-                decision_log = f"Final Decision for {symbol}: {action} ({strength})"
-                entry_price = signal.get("entry_price", 0.0)
-                stop_loss = signal.get("stop_loss", 0.0)
-                position_size = signal.get("position_size", 0.0)
-                leverage = signal.get("leverage", 1)
-
-                decision_log += f"\nEntry Details:"
-                decision_log += f"\n  - Entry Price: {entry_price:.8f} USDT"
-                decision_log += f"\n  - Stop Loss: {stop_loss:.8f} USDT"
-                decision_log += f"\n  - Position Size: {position_size:.8f}"
-                decision_log += f"\n  - Leverage: {leverage}x"
-
-                if "risk_amount" in signal:
-                    decision_log += (
-                        f"\n  - Risk Amount: {signal['risk_amount']:.8f} USDT"
-                    )
-
-                if "leverage_details" in signal:
-                    details = signal["leverage_details"]
-                    decision_log += (
-                        f"\n  - Notional Size: {details['notional_size']:.8f} USDT"
-                    )
-                    decision_log += (
-                        f"\n  - Margin Required: {details['margin_required']:.8f} USDT"
-                    )
-                    decision_log += (
-                        f"\n  - Risk per Unit: {details['risk_per_unit']:.8f} USDT"
-                    )
-
-                logger.info(decision_log)
-
-            # Send signal notification via Telegram
-            if signal.get("type") == "ENTRY":
-                telegram_notifier.notify_indicator_signal(
-                    symbol=symbol,
-                    signal_type=signal.get("direction", "UNKNOWN"),
-                    indicator_values=signal.get("indicator_values", {}),
+            if state_changed:
+                # Create concise routine log message
+                routine_log = (
+                    f"State Snapshot: Price={current_price:.8f} | "
+                    f"Fibo Trend={fibo_values['trend']} | "
+                    f"RSI Mom={'Positive' if rsi_values['AL'] else 'Negative' if rsi_values['SAT'] else 'Neutral'} | "
+                    f"MACD Hist={macd_values['hist']:.6f} | "
+                    f"Decision={current_signal_action} | "
+                    f"Position={position_status}"
                 )
-            elif signal.get("type") == "EXIT":
-                telegram_notifier.notify_final_exit(
-                    symbol=symbol,
-                    trade_type=signal.get("direction", "UNKNOWN"),
-                    exit_price=signal.get("exit_price", 0.0),
-                    closed_size=signal.get("closed_size", 0.0),
-                    pnl=signal.get("pnl", 0.0),
-                    pnl_percentage=signal.get("pnl_percentage", 0.0),
-                    reason=signal.get("reason", "Strategy signal"),
+
+                # Use throttled logging for state snapshots
+                log_throttler.log("state_snapshot", routine_log, level="info")
+                last_state_snapshot = current_state
+
+            # Log signal change immediately if detected
+            if signal_changed:
+                signal_change_log = (
+                    f"Signal Change: {last_signal_action} -> {current_signal_action} "
+                    f"(Fibo: {'Long' if fibo_values['long_signal'] else 'Short' if fibo_values['short_signal'] else 'Neutral'}, "
+                    f"RSI: {'Positive' if rsi_values['AL'] else 'Negative' if rsi_values['SAT'] else 'Neutral'}, "
+                    f"MACD: {'Positive' if macd_values['hist'] > 0 else 'Negative'})"
                 )
+                # Use throttled logging for signal changes
+                log_throttler.log("signal_change", signal_change_log, level="info")
+
+            # Update last signal action for next comparison
+            last_signal_action = current_signal_action
+
+            # Process signal
+            if signal:
+                # Log final decision with detailed reasoning for non-HOLD actions
+                action = signal.get("action", "UNKNOWN")
+                strength = signal.get("strength", "NONE")
+
+                # Only log detailed decision for non-HOLD actions
+                if action != "HOLD":
+                    decision_log = f"Final Decision for {symbol}: {action} ({strength})"
+                    entry_price = signal.get("entry_price", 0.0)
+                    stop_loss = signal.get("stop_loss", 0.0)
+                    position_size = signal.get("position_size", 0.0)
+                    leverage = signal.get("leverage", 1)
+
+                    decision_log += f"\nEntry Details:"
+                    decision_log += f"\n  - Entry Price: {entry_price:.8f} USDT"
+                    decision_log += f"\n  - Stop Loss: {stop_loss:.8f} USDT"
+                    decision_log += f"\n  - Position Size: {position_size:.8f}"
+                    decision_log += f"\n  - Leverage: {leverage}x"
+
+                    if "risk_amount" in signal:
+                        decision_log += (
+                            f"\n  - Risk Amount: {signal['risk_amount']:.8f} USDT"
+                        )
+
+                    if "leverage_details" in signal:
+                        details = signal["leverage_details"]
+                        decision_log += (
+                            f"\n  - Notional Size: {details['notional_size']:.8f} USDT"
+                        )
+                        decision_log += f"\n  - Margin Required: {details['margin_required']:.8f} USDT"
+                        decision_log += (
+                            f"\n  - Risk per Unit: {details['risk_per_unit']:.8f} USDT"
+                        )
+
+                    # Use throttled logging for decision details
+                    log_throttler.log("decision", decision_log, level="info")
+
+                # Send signal notification via Telegram
+                if signal.get("type") == "ENTRY":
+                    telegram_notifier.notify_indicator_signal(
+                        symbol=symbol,
+                        signal_type=signal.get("direction", "UNKNOWN"),
+                        indicator_values=signal.get("indicator_values", {}),
+                    )
+                elif signal.get("type") == "EXIT":
+                    telegram_notifier.notify_exit_signal(
+                        symbol=symbol,
+                        exit_type=signal.get("exit_type", "UNKNOWN"),
+                        pnl=signal.get("pnl", 0.0),
+                    )
+
+            # Sleep for a short time to prevent excessive CPU usage
+            time.sleep(1)
+
     except Exception as e:
-        error_type = type(e).__name__
-        error_message = f"{error_type}: {str(e)}"
-        logger.error(f"Error in signal processing loop: {error_message}")
-        telegram_notifier.notify_error(
-            error_message=error_message,
-            context=f"Signal processing loop for {symbol} {timeframe}",
-            additional_info={"symbol": symbol, "timeframe": timeframe},
-        )
+        logger.error(f"Error in signal processing loop: {str(e)}")
+        telegram_notifier.notify_error(f"Signal processing error: {str(e)}")
 
 
 def main():
@@ -284,8 +305,7 @@ def main():
         timeframe = "1h"
 
         # Start signal processing loop
-        while True:
-            signal_processing_loop(strategy, telegram_notifier, symbol, timeframe)
+        signal_processing_loop(strategy, telegram_notifier, symbol, timeframe)
 
         logger.info(
             f"Trading bot çalışıyor. Sembol: {symbol}, Zaman dilimi: {timeframe}"

@@ -1,109 +1,76 @@
 """
-Temel gösterge (indicator) sınıfı modülü.
+Temel gösterge sınıfı.
+
+Tüm göstergeler için temel sınıf.
 """
-from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Union
+
+from typing import Dict, Any, Optional
 import pandas as pd
-import numpy as np
 from loguru import logger
 
 
-class BaseIndicator(ABC):
+class BaseIndicator:
     """
-    Tüm teknik göstergeler için temel sınıf.
-    Yeni göstergeler bu sınıftan türetilmelidir.
+    Temel gösterge sınıfı.
+
+    Tüm göstergeler bu sınıftan türetilir.
     """
-    
-    def __init__(self, name: str, params: Dict[str, Any] = None):
+
+    def __init__(self, name: str, params: Dict[str, Any]):
         """
-        BaseIndicator sınıfını başlatır.
-        
+        Temel gösterge sınıfını başlatır.
+
         Args:
             name: Gösterge adı
             params: Gösterge parametreleri
         """
         self.name = name
-        self.params = params or {}
+        self.params = params
         self.result = None
-        self.is_ready = False
-        logger.debug(f"{name} göstergesi oluşturuldu. Parametreler: {params}")
-    
-    @abstractmethod
+
+        logger.debug(f"{name} göstergesi başlatıldı")
+
     def calculate(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Gösterge hesaplaması yapan metot.
-        
+        Gösterge değerlerini hesaplar.
+
         Args:
-            data: Hesaplama için kullanılacak fiyat verileri
-            
+            data: İşlem verileri DataFrame'i
+
         Returns:
             pd.DataFrame: Hesaplama sonuçlarını içeren DataFrame
         """
-        pass
-    
+        raise NotImplementedError("calculate metodu alt sınıflarda uygulanmalıdır")
+
     def is_valid_signal(self, data: pd.DataFrame) -> bool:
         """
-        Gösterge sinyallerinin geçerli olup olmadığını kontrol eder.
-        
+        Geçerli bir sinyal olup olmadığını kontrol eder.
+
         Args:
             data: Kontrol edilecek veri
-            
+
         Returns:
             bool: Sinyal geçerliyse True, değilse False
         """
-        # Bu metot alt sınıflarda override edilebilir
-        return True
-    
-    def get_last_value(self) -> Union[float, Dict[str, float], None]:
+        raise NotImplementedError(
+            "is_valid_signal metodu alt sınıflarda uygulanmalıdır"
+        )
+
+    def get_signal(self) -> Dict[str, Any]:
         """
-        Göstergenin en son değerini döndürür.
-        
+        Alım/satım sinyali üretir.
+
         Returns:
-            Union[float, Dict[str, float], None]: Göstergenin son değeri veya alt göstergelerin son değerleri
+            Dict: Sinyal bilgisi
         """
-        if self.result is None or self.result.empty:
-            return None
-        
-        try:
-            # Tek bir sütun varsa float olarak döndür
-            if len(self.result.columns) == 1:
-                return self.result.iloc[-1, 0]
-            
-            # Birden fazla sütun varsa dict olarak döndür
-            return self.result.iloc[-1].to_dict()
-        except Exception as e:
-            logger.error(f"{self.name} için son değer alınamadı: {e}")
-            return None
-    
-    def __str__(self) -> str:
+        raise NotImplementedError("get_signal metodu alt sınıflarda uygulanmalıdır")
+
+    def plot_data(self, ax, data: pd.DataFrame) -> None:
         """
-        Göstergenin string temsilini döndürür.
-        
-        Returns:
-            str: Gösterge bilgisi
-        """
-        param_str = ", ".join([f"{k}={v}" for k, v in self.params.items()])
-        return f"{self.name}({param_str})"
-    
-    def reset(self) -> None:
-        """
-        Gösterge durumunu sıfırlar.
-        """
-        self.result = None
-        self.is_ready = False
-        logger.debug(f"{self.name} göstergesi sıfırlandı")
-    
-    def update(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Yeni veri geldiğinde göstergeyi günceller.
-        
+        Gösterge verilerini grafik üzerine çizer.
+
         Args:
-            data: Güncelleme için kullanılacak yeni veri
-            
-        Returns:
-            pd.DataFrame: Güncellenen gösterge değerleri
+            ax: Matplotlib ekseni
+            data: Çizilecek veri
         """
-        result = self.calculate(data)
-        self.result = result
-        self.is_ready = not (result is None or result.empty)
-        return result 
+        raise NotImplementedError("plot_data metodu alt sınıflarda uygulanmalıdır")
